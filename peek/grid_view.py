@@ -446,19 +446,25 @@ class GridView(ResizeMixin, QWidget):
         self._dragging = False
 
     def _update_drag_reorder(self, pos):
-        """During drag, swap the dragged cell with whatever cell is under the cursor."""
+        """During drag, insert the dragged cell at the drop position (shift, not swap)."""
         if not self._drag_cell or self._drag_cell not in self._cells:
             return
         src = self._drag_cell.index
         for cell in self._cells:
             if cell is not self._drag_cell and cell.geometry().contains(pos):
                 dst = cell.index
-                # Swap in all parallel lists
-                self._cells[src], self._cells[dst] = self._cells[dst], self._cells[src]
-                self.file_paths[src], self.file_paths[dst] = self.file_paths[dst], self.file_paths[src]
-                self._aspects[src], self._aspects[dst] = self._aspects[dst], self._aspects[src]
-                self._cells[src].index = src
-                self._cells[dst].index = dst
+                if src == dst:
+                    break
+                # Remove from old position and insert at new position
+                cell_obj = self._cells.pop(src)
+                fp_obj = self.file_paths.pop(src)
+                asp_obj = self._aspects.pop(src)
+                self._cells.insert(dst, cell_obj)
+                self.file_paths.insert(dst, fp_obj)
+                self._aspects.insert(dst, asp_obj)
+                # Re-index all cells
+                for i, c in enumerate(self._cells):
+                    c.index = i
                 self._do_layout()
                 break
 
