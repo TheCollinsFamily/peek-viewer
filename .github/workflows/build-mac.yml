@@ -67,53 +67,79 @@ jobs:
             --clean \
             main.py
 
-      - name: Code sign (if credentials available)
-        if: env.APPLE_SIGNING_KEY != ''
+      - name: Code sign
+        if: ${{ secrets.APPLE_SIGNING_KEY }}
         env:
           APPLE_SIGNING_KEY: ${{ secrets.APPLE_SIGNING_KEY }}
           APPLE_SIGNING_CERT: ${{ secrets.APPLE_SIGNING_CERT }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
-          # Decode signing credentials
+          APP_PATH=$(find dist -name "*.app" -type d | head -1)
+          echo "App path: $APP_PATH"
+
+          # Decode signing credentials from base64 secrets
           echo "$APPLE_SIGNING_KEY" | base64 -d > /tmp/rfab-signing.key
           echo "$APPLE_SIGNING_CERT" | base64 -d > /tmp/rfab-cert.cer
 
-          # Import into keychain
+          # Create a temporary keychain for CI
+          KEYCHAIN_PATH="$HOME/Library/Keychains/build.keychain-db"
+          KEYCHAIN_PASS="ci-build-pass"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+          # Convert key + cert to p12 and import
           openssl x509 -inform DER -in /tmp/rfab-cert.cer -out /tmp/peek-cert.pem 2>/dev/null || \
           openssl x509 -inform PEM -in /tmp/rfab-cert.cer -out /tmp/peek-cert.pem 2>/dev/null
 
-          openssl pkcs12 -export -legacy -out /tmp/peek-signing.p12 \
+          openssl pkcs12 -export -out /tmp/peek-signing.p12 \
             -inkey /tmp/rfab-signing.key \
             -in /tmp/peek-cert.pem \
             -name "Developer ID Application: Pragmatist Foundation (AFBVMK56D7)" \
-            -passout pass:peek 2>/dev/null
+            -passout pass:peek
 
-          security import /tmp/peek-signing.p12 -k ~/Library/Keychains/login.keychain-db -P "peek" -T /usr/bin/codesign 2>/dev/null || true
+          security import /tmp/peek-signing.p12 -k "$KEYCHAIN_PATH" -P "peek" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
 
-          CODESIGN_ID=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | sed 's/.*"\(Developer ID Application: .*\)"/\1/')
+          # Add build keychain to search list
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+          # Find the signing identity
+          CODESIGN_ID=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -1 | sed 's/.*"\(Developer ID Application: .*\)"/\1/')
+          echo "Found identity: $CODESIGN_ID"
 
           if [ -n "$CODESIGN_ID" ]; then
-            echo "Signing with: $CODESIGN_ID"
+            # Sign all nested frameworks/dylibs first, then the app
+            find "$APP_PATH" -name "*.dylib" -o -name "*.so" -o -name "*.framework" | while read f; do
+              codesign --force --options runtime --sign "$CODESIGN_ID" "$f" 2>/dev/null || true
+            done
             codesign --deep --force --options runtime \
+              --entitlements entitlements.plist \
               --sign "$CODESIGN_ID" \
-              "dist/RFab Viewer.app"
+              "$APP_PATH"
+            echo "Code signing complete"
             echo "SIGNED=true" >> $GITHUB_ENV
+          else
+            echo "WARNING: No signing identity found"
+            security find-identity -v -p codesigning
           fi
 
           rm -f /tmp/rfab-signing.key /tmp/rfab-cert.cer /tmp/peek-cert.pem /tmp/peek-signing.p12
 
-      - name: Notarize (if signed)
+      - name: Notarize
         if: env.SIGNED == 'true'
         env:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
-          ditto -c -k --sequesterRsrc --keepParent "dist/RFab Viewer.app" /tmp/peek-notarize.zip
+          APP_PATH=$(find dist -name "*.app" -type d | head -1)
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" /tmp/peek-notarize.zip
+          echo "Submitting for notarization (this may take 2-10 minutes)..."
           xcrun notarytool submit /tmp/peek-notarize.zip \
             --apple-id "collinsmalcolm@gmail.com" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
             --team-id "AFBVMK56D7" \
             --wait
-          xcrun stapler staple "dist/RFab Viewer.app"
+          xcrun stapler staple "$APP_PATH"
+          echo "Notarization complete and stapled"
           rm -f /tmp/peek-notarize.zip
 
       - name: List build output
@@ -130,10 +156,16 @@ jobs:
             ls -laR dist/
             exit 1
           fi
+          # Create DMG staging folder with app + Applications symlink
+          mkdir -p /tmp/dmg-staging
+          cp -R "$APP_PATH" /tmp/dmg-staging/
+          ln -s /Applications /tmp/dmg-staging/Applications
+          # Create DMG from staging folder (user sees app + Applications folder to drag into)
           hdiutil create -volname "RFab Viewer" \
-            -srcfolder "$APP_PATH" \
+            -srcfolder /tmp/dmg-staging \
             -ov -format UDZO \
             "dist/RFab Viewer.dmg"
+          rm -rf /tmp/dmg-staging
 
       - name: Upload DMG as artifact (backup)
         uses: actions/upload-artifact@v4
@@ -147,11 +179,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: us-east-1
         run: |
-          echo "Checking AWS CLI..."
-          which aws && aws --version || echo "aws not found in PATH"
-          echo "AWS_ACCESS_KEY_ID set: $( [ -n \"$AWS_ACCESS_KEY_ID\" ] && echo YES || echo NO )"
-          echo "AWS_SECRET_ACCESS_KEY set: $( [ -n \"$AWS_SECRET_ACCESS_KEY\" ] && echo YES || echo NO )"
-          pip install awscli 2>&1 | tail -3
+          which aws || pip install awscli
           ls -lh "dist/RFab Viewer.dmg"
-          aws s3 cp "dist/RFab Viewer.dmg" "s3://rfab-media/downloads/RFab Viewer.dmg" --content-type application/octet-stream --debug 2>&1 | tail -20
-          echo "Upload complete"
+          aws s3 cp "dist/RFab Viewer.dmg" "s3://rfab-media/downloads/RFab Viewer.dmg" --content-type application/octet-stream
+          echo "Uploaded to: https://rfab-media.s3.us-east-1.amazonaws.com/downloads/RFab Viewer.dmg"
