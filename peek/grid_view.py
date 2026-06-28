@@ -692,6 +692,7 @@ class GridView(ResizeMixin, QWidget):
         w, h = cell.width(), cell.height()
         if hasattr(cell, '_label'):
             cell._label.setGeometry(0, 0, w, h)
+            cell._label.show()
             if getattr(cell, '_movie', None):
                 from PySide6.QtCore import QSize
                 cell._movie.setScaledSize(QSize(w, h))
@@ -701,6 +702,7 @@ class GridView(ResizeMixin, QWidget):
                 cell._label.setPixmap(scaled)
         if hasattr(cell, '_video_widget'):
             cell._video_widget.setGeometry(0, 0, w, h)
+            cell._video_widget.show()
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
