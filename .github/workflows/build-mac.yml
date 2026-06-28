@@ -68,11 +68,15 @@ jobs:
             main.py
 
       - name: Code sign
-        if: ${{ secrets.APPLE_SIGNING_KEY }}
         env:
           APPLE_SIGNING_KEY: ${{ secrets.APPLE_SIGNING_KEY }}
           APPLE_SIGNING_CERT: ${{ secrets.APPLE_SIGNING_CERT }}
         run: |
+          if [ -z "$APPLE_SIGNING_KEY" ] || [ -z "$APPLE_SIGNING_CERT" ]; then
+            echo "No signing credentials - skipping code sign"
+            exit 0
+          fi
+
           APP_PATH=$(find dist -name "*.app" -type d | head -1)
           echo "App path: $APP_PATH"
 
