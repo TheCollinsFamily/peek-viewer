@@ -43,17 +43,17 @@ def _cursor_for_edge(edge):
 
 _WC_BTN_STYLE = """
     QPushButton {
-        background: rgba(255, 255, 255, 0.06);
-        color: rgba(255, 255, 255, 0.25);
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(0, 0, 0, 0.45);
+        color: rgba(255, 255, 255, 0.7);
+        border: 1px solid rgba(255, 255, 255, 0.25);
         border-radius: 4px;
         font-size: 14px;
         padding: 0;
     }
     QPushButton:hover {
-        background: rgba(255, 255, 255, 0.15);
-        color: rgba(255, 255, 255, 0.7);
-        border-color: rgba(255, 255, 255, 0.25);
+        background: rgba(0, 0, 0, 0.65);
+        color: white;
+        border-color: rgba(255, 255, 255, 0.5);
     }
 """
 _WC_MUTE_STYLE = """

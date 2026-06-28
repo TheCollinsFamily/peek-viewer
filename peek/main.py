@@ -393,6 +393,16 @@ class LauncherWindow(QMainWindow):
         checks_row.addStretch()
         unzip_layout.addLayout(checks_row)
 
+        checks_row2 = QHBoxLayout()
+        self._unzip_flatten_check = QCheckBox("Flatten after (prefix folder names, delete folders & ZIPs)")
+        self._unzip_flatten_check.setToolTip(
+            "After extracting, moves all media into the root folder with folder-name prefixes, "
+            "then deletes the empty subfolders and original ZIP files."
+        )
+        checks_row2.addWidget(self._unzip_flatten_check)
+        checks_row2.addStretch()
+        unzip_layout.addLayout(checks_row2)
+
         unzip_btn_row = QHBoxLayout()
         unzip_btn = QPushButton("Pick Folder & Unzip")
         unzip_btn.setObjectName("accent")
@@ -612,8 +622,12 @@ class LauncherWindow(QMainWindow):
 
         recursive = self._recursive_check.isChecked()
         delete_after = self._delete_check.isChecked()
+        flatten_after = self._unzip_flatten_check.isChecked()
 
-        if delete_after:
+        # If flatten-after is on, we always delete ZIPs (no separate confirmation needed)
+        if flatten_after:
+            delete_after = True
+        elif delete_after:
             reply = QMessageBox.question(
                 self, "Confirm Delete",
                 "Delete ZIP files after extraction?",
@@ -636,11 +650,33 @@ class LauncherWindow(QMainWindow):
             self._unzip_progress.setFormat(f"{name} ({current}/{total})")
             QApplication.processEvents()
 
+        # Step 1: Unzip all archives (delete ZIPs after if requested)
         results = unzip_folder(folder, recursive=recursive, delete_after=delete_after, progress_callback=on_progress)
 
         self._unzip_progress.setVisible(False)
 
-        msg = f"Done!\n\nExtracted: {results['success']}\nSkipped: {results['skipped']}\nFailed: {results['failed']}"
+        if flatten_after:
+            # Step 2: Flatten — move all media from subfolders to root, prefix with folder name
+            from peek.utils import flatten_folder
+            flatten_results = flatten_folder(
+                folder, delete_empty=True, prefix_folder=True, progress_callback=None
+            )
+            # Step 3: Delete any remaining ZIPs that were skipped
+            remaining_zips = get_archive_files(folder, recursive=recursive)
+            for arc in remaining_zips:
+                try:
+                    Path(arc).unlink()
+                except Exception:
+                    pass
+            msg = (
+                f"Done! (Unzipped & Flattened)\n\n"
+                f"Extracted: {results['success']} archives\n"
+                f"Skipped: {results['skipped']}\n"
+                f"Flattened: {flatten_results['moved']} files\n"
+                f"Folders removed: {flatten_results['removed_dirs']}"
+            )
+        else:
+            msg = f"Done!\n\nExtracted: {results['success']}\nSkipped: {results['skipped']}\nFailed: {results['failed']}"
         QMessageBox.information(self, "Unzip Complete", msg)
 
     def _unzip_single(self, archive_path):

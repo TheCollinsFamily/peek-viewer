@@ -19,13 +19,13 @@ _GAP = 2
 _DRAG_THRESHOLD = 12
 
 _REMOVE_BTN_STYLE = (
-    "QPushButton { background: rgba(255,255,255,0.06); "
-    "color: rgba(255,255,255,0.25); "
-    "border: 1px solid rgba(255,255,255,0.08); border-radius: 4px; "
+    "QPushButton { background: rgba(0,0,0,0.35); "
+    "color: rgba(255,255,255,0.55); "
+    "border: 1px solid rgba(255,255,255,0.15); border-radius: 4px; "
     "font-size: 14px; padding: 0; }"
-    "QPushButton:hover { background: rgba(255,255,255,0.15); "
-    "color: rgba(255,255,255,0.7); "
-    "border-color: rgba(255,255,255,0.25); }"
+    "QPushButton:hover { background: rgba(200,50,50,0.75); "
+    "color: white; "
+    "border-color: rgba(255,100,100,0.5); }"
 )
 
 
@@ -376,6 +376,20 @@ class GridView(ResizeMixin, QWidget):
             y += row_h + _GAP
         self._raise_grab_handle()
         _log.debug(f"GRID INIT: {len(self._cells)} cells created")
+        # Hide remove buttons that conflict with the top button bar (top-right area)
+        _BAR_H = 48
+        if len(self._cells) > 1:
+            btn_count = len(self._wc_buttons) if hasattr(self, '_wc_buttons') else 5
+            bar_w = 28 * btn_count + 4 * (btn_count - 1) + 20
+            bar_left = w - bar_w
+            for cell in self._cells:
+                if hasattr(cell, '_remove_btn'):
+                    # X button is at center-top of cell
+                    btn_center_x = cell.x() + cell.width() // 2
+                    if cell.y() < _BAR_H and btn_center_x > bar_left - 14:
+                        cell._remove_btn.hide()
+                    else:
+                        cell._remove_btn.show()
         # Delay floating button show to after window is on screen
         from PySide6.QtCore import QTimer
         QTimer.singleShot(100, self._show_floating_remove_btns)
@@ -458,9 +472,17 @@ class GridView(ResizeMixin, QWidget):
         if not self.isVisible() or len(self._cells) <= 1:
             return
         _log.debug(f"FLOAT BTNS: showing for {len(self._cells)} cells")
+        btn_count = len(self._wc_buttons) if hasattr(self, '_wc_buttons') else 5
+        bar_w = 28 * btn_count + 4 * (btn_count - 1) + 20
+        bar_left = self.width() - bar_w
         for c in self._cells:
             if getattr(c, "_remove_btn_floating", False):
                 try:
+                    # Skip if cell X button overlaps button bar (top-right)
+                    btn_center_x = c.x() + c.width() // 2
+                    if c.y() < 48 and btn_center_x > bar_left - 14:
+                        c._remove_btn.hide()
+                        continue
                     w = c.width()
                     gp = c.mapToGlobal(c.rect().topLeft())
                     c._remove_btn.move(gp.x() + (w - 28) // 2, gp.y() + 4)
