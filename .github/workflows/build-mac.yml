@@ -123,21 +123,19 @@ jobs:
             -ov -format UDZO \
             "dist/RFab Viewer.dmg"
 
+      - name: Upload DMG as artifact (backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: RFab-Viewer-macOS
+          path: dist/RFab Viewer.dmg
+
       - name: Upload DMG to S3
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: us-east-1
         run: |
-          pip install awscli
-          aws s3 cp "dist/RFab Viewer.dmg" "s3://rfab-media/downloads/RFab Viewer.dmg" \
-            --content-type "application/octet-stream" \
-            --content-disposition 'attachment; filename="RFab Viewer.dmg"'
-          echo ""
-          echo "✅ Uploaded to: https://rfab-media.s3.us-east-1.amazonaws.com/downloads/RFab Viewer.dmg"
-
-      - name: Upload DMG as artifact (backup)
-        uses: actions/upload-artifact@v4
-        with:
-          name: RFab-Viewer-macOS
-          path: dist/RFab Viewer.dmg
+          which aws || pip install awscli
+          ls -lh "dist/RFab Viewer.dmg"
+          aws s3 cp "dist/RFab Viewer.dmg" "s3://rfab-media/downloads/RFab Viewer.dmg" --content-type application/octet-stream
+          echo "Uploaded to: https://rfab-media.s3.us-east-1.amazonaws.com/downloads/RFab Viewer.dmg"
