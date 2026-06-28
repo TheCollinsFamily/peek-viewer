@@ -171,9 +171,6 @@ class ImageViewer(ResizeMixin, QWidget):
         self._raise_grab_handle()
         w, h = self.width(), self.height()
         self._label.setGeometry(0, 0, w, h)
-        # Skip expensive rendering during active resize
-        if getattr(self, '_resize_active', False):
-            return
         if self._movie:
             from PySide6.QtCore import QSize
             self._movie.setScaledSize(QSize(w, h))
