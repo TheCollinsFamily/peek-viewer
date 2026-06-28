@@ -171,6 +171,10 @@ class GridCell(QFrame):
                 from PySide6.QtCore import QSize
                 self._movie.setScaledSize(QSize(w, h))
             elif self._pixmap:
+                # Skip scaling entirely during active resize for smooth drag
+                parent = self.parentWidget()
+                if getattr(parent, '_resize_active', False):
+                    return
                 fw, fh = fit_size(self._pixmap.width(), self._pixmap.height(), w, h)
                 scaled = self._pixmap.scaled(fw, fh, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                 self._label.setPixmap(scaled)
@@ -250,6 +254,8 @@ class GridView(ResizeMixin, QWidget):
         self._drag_start_pos = None
         self._dragging = False
 
+        self._resize_active = False
+        self._layout_mode = 'auto'  # 'auto', '1row', '2row'
         self._resize_init()
         self.setAcceptDrops(True)
 
@@ -287,6 +293,7 @@ class GridView(ResizeMixin, QWidget):
         self.resize(win_w, win_h)
         self._center_on_screen()
         self._create_fullscreen_btn()
+        self._add_layout_buttons()
         self._do_layout()
         # Hide remove button when only one cell (window X suffices)
         if len(self._cells) == 1:
@@ -469,6 +476,7 @@ class GridView(ResizeMixin, QWidget):
 
     def mousePressEvent(self, event):
         if self._resize_mouse_press(event):
+            self._resize_active = True
             return
         super().mousePressEvent(event)
 
@@ -478,7 +486,20 @@ class GridView(ResizeMixin, QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        was_resizing = self._resize_active
+        self._resize_active = False
         self._resize_mouse_release(event)
+        if was_resizing:
+            self._finalize_resize()
+
+    def _finalize_resize(self):
+        """Force one final smooth-quality render after resize completes."""
+        for cell in self._cells:
+            if hasattr(cell, '_label') and hasattr(cell, '_pixmap') and cell._pixmap:
+                w, h = cell.width(), cell.height()
+                fw, fh = fit_size(cell._pixmap.width(), cell._pixmap.height(), w, h)
+                scaled = cell._pixmap.scaled(fw, fh, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                cell._label.setPixmap(scaled)
 
     def keyPressEvent(self, event):
         key = event.key()
@@ -512,6 +533,54 @@ class GridView(ResizeMixin, QWidget):
         else:
             self.showFullScreen()
             self._is_fullscreen = True
+
+    def _add_layout_buttons(self):
+        """Add layout mode buttons (auto grid / 1 row / 2 rows) to the button bar."""
+        from peek.resizable import _WC_BTN_STYLE
+        if not self._btn_bar:
+            return
+
+        auto_btn = QPushButton("\u25a6", self._btn_bar)
+        auto_btn.setFixedSize(28, 28)
+        auto_btn.setStyleSheet(_WC_BTN_STYLE)
+        auto_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        auto_btn.setToolTip("Auto grid layout")
+        auto_btn.clicked.connect(self._set_layout_auto)
+        self._wc_buttons.insert(0, auto_btn)
+
+        row1_btn = QPushButton("\u25ac", self._btn_bar)
+        row1_btn.setFixedSize(28, 28)
+        row1_btn.setStyleSheet(_WC_BTN_STYLE)
+        row1_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        row1_btn.setToolTip("Single row layout")
+        row1_btn.clicked.connect(self._set_layout_1row)
+        self._wc_buttons.insert(1, row1_btn)
+
+        row2_btn = QPushButton("\u2261", self._btn_bar)
+        row2_btn.setFixedSize(28, 28)
+        row2_btn.setStyleSheet(_WC_BTN_STYLE)
+        row2_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        row2_btn.setToolTip("Two row layout")
+        row2_btn.clicked.connect(self._set_layout_2row)
+        self._wc_buttons.insert(2, row2_btn)
+
+        self._btn_bar.reposition()
+
+    def _set_layout_auto(self):
+        self._layout_mode = 'auto'
+        self._max_columns = 4
+        self._do_layout()
+
+    def _set_layout_1row(self):
+        self._layout_mode = '1row'
+        self._max_columns = len(self._cells)
+        self._do_layout()
+
+    def _set_layout_2row(self):
+        self._layout_mode = '2row'
+        import math
+        self._max_columns = max(1, math.ceil(len(self._cells) / 2))
+        self._do_layout()
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():

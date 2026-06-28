@@ -32,6 +32,7 @@ class ImageViewer(ResizeMixin, QWidget):
         self._label = QLabel(self)
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
         self._pixmap = None
         self._movie = None
@@ -168,10 +169,13 @@ class ImageViewer(ResizeMixin, QWidget):
         super().resizeEvent(event)
         self._reposition_fs_btn()
         self._raise_grab_handle()
+        w, h = self.width(), self.height()
+        self._label.setGeometry(0, 0, w, h)
+        # Skip expensive rendering during active resize
+        if getattr(self, '_resize_active', False):
+            return
         if self._movie:
             from PySide6.QtCore import QSize
-            w, h = self.width(), self.height()
-            self._label.setGeometry(0, 0, w, h)
             self._movie.setScaledSize(QSize(w, h))
         else:
             self._render()
