@@ -116,10 +116,22 @@ jobs:
           xcrun stapler staple "dist/RFab Viewer.app"
           rm -f /tmp/peek-notarize.zip
 
+      - name: List build output
+        run: |
+          echo "=== dist/ contents ==="
+          ls -laR dist/ | head -60
+
       - name: Create DMG
         run: |
+          APP_PATH=$(find dist -name "*.app" -type d | head -1)
+          echo "Found app at: $APP_PATH"
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: No .app bundle found!"
+            ls -laR dist/
+            exit 1
+          fi
           hdiutil create -volname "RFab Viewer" \
-            -srcfolder "dist/RFab Viewer.app" \
+            -srcfolder "$APP_PATH" \
             -ov -format UDZO \
             "dist/RFab Viewer.dmg"
 
