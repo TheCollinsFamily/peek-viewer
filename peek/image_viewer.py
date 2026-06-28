@@ -114,14 +114,19 @@ class ImageViewer(ResizeMixin, QWidget):
             self._label.setText(f"Error loading image:\n{e}")
             self._label.setStyleSheet("color: #ff4444; font-size: 14px;")
 
-    def _render(self):
+    def _render(self, force_smooth=False):
         if not self._pixmap:
             return
         w, h = self.width(), self.height()
         fw, fh = fit_size(self._pixmap.width(), self._pixmap.height(), w, h)
         fw = int(fw * self._zoom)
         fh = int(fh * self._zoom)
-        scaled = self._pixmap.scaled(fw, fh, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        # Use fast scaling during active resize for smooth UX
+        if not force_smooth and getattr(self, '_resize_active', False):
+            mode = Qt.TransformationMode.FastTransformation
+        else:
+            mode = Qt.TransformationMode.SmoothTransformation
+        scaled = self._pixmap.scaled(fw, fh, Qt.AspectRatioMode.KeepAspectRatio, mode)
 
         canvas = QPixmap(w, h)
         canvas.fill(Qt.GlobalColor.black)
@@ -205,6 +210,7 @@ class ImageViewer(ResizeMixin, QWidget):
 
     def mousePressEvent(self, event):
         if self._resize_mouse_press(event):
+            self._resize_active = True
             return
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = event.globalPosition().toPoint()
@@ -221,7 +227,11 @@ class ImageViewer(ResizeMixin, QWidget):
             self._render()
 
     def mouseReleaseEvent(self, event):
+        was_resizing = getattr(self, '_resize_active', False)
+        self._resize_active = False
         if self._resize_mouse_release(event):
+            if was_resizing:
+                self._render(force_smooth=True)
             return
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = None
