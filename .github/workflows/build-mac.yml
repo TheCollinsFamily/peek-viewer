@@ -68,35 +68,70 @@ jobs:
             main.py
 
       - name: Code sign
-        continue-on-error: true
         env:
           APPLE_SIGNING_KEY: ${{ secrets.APPLE_SIGNING_KEY }}
           APPLE_SIGNING_CERT: ${{ secrets.APPLE_SIGNING_CERT }}
         run: |
           set -x
+          echo "=== DEBUG: Checking secrets ==="
+          echo "APPLE_SIGNING_KEY length: ${#APPLE_SIGNING_KEY}"
+          echo "APPLE_SIGNING_CERT length: ${#APPLE_SIGNING_CERT}"
+
           if [ -z "$APPLE_SIGNING_KEY" ] || [ -z "$APPLE_SIGNING_CERT" ]; then
-            echo "No signing credentials - skipping code sign"
-            exit 0
+            echo "ERROR: Signing credentials are empty!"
+            exit 1
           fi
 
           APP_PATH=$(find dist -name "*.app" -type d | head -1)
           echo "App path: $APP_PATH"
 
           # Decode signing credentials from base64 secrets
-          echo "$APPLE_SIGNING_KEY" | base64 -d > /tmp/rfab-signing.key
-          echo "$APPLE_SIGNING_CERT" | base64 -d > /tmp/rfab-cert.cer
+          echo "=== DEBUG: Decoding key ==="
+          echo "$APPLE_SIGNING_KEY" | base64 --decode > /tmp/rfab-signing.key 2>&1
+          echo "Key file size: $(wc -c < /tmp/rfab-signing.key) bytes"
+          head -1 /tmp/rfab-signing.key
 
-          # Create a temporary keychain for CI
-          KEYCHAIN_PATH="$HOME/Library/Keychains/build.keychain-db"
-          KEYCHAIN_PASS="ci-build-pass"
-          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          echo "=== DEBUG: Decoding cert ==="
+          echo "$APPLE_SIGNING_CERT" | base64 --decode > /tmp/rfab-cert.cer 2>&1
+          echo "Cert file size: $(wc -c < /tmp/rfab-cert.cer) bytes"
 
-          # Convert key + cert to p12 and import
-          openssl x509 -inform DER -in /tmp/rfab-cert.cer -out /tmp/peek-cert.pem 2>/dev/null || \
-          openssl x509 -inform PEM -in /tmp/rfab-cert.cer -out /tmp/peek-cert.pem 2>/dev/null
+          # Check key format
+          echo "=== DEBUG: Key format check ==="
+          openssl rsa -in /tmp/rfab-signing.key -check -noout 2>&1 || \
+          openssl pkey -in /tmp/rfab-signing.key -check -noout 2>&1 || \
+          echo "WARNING: Key format not recognized as RSA or PKEY"
 
+          # Check cert format (try DER then PEM)
+          echo "=== DEBUG: Cert format check ==="
+          if openssl x509 -inform DER -in /tmp/rfab-cert.cer -noout 2>/dev/null; then
+            echo "Cert is DER format"
+            openssl x509 -inform DER -in /tmp/rfab-cert.cer -out /tmp/peek-cert.pem
+            openssl x509 -inform DER -in /tmp/rfab-cert.cer -subject -issuer -dates -noout
+          elif openssl x509 -inform PEM -in /tmp/rfab-cert.cer -noout 2>/dev/null; then
+            echo "Cert is PEM format"
+            cp /tmp/rfab-cert.cer /tmp/peek-cert.pem
+            openssl x509 -in /tmp/peek-cert.pem -subject -issuer -dates -noout
+          else
+            echo "ERROR: Cannot parse certificate in DER or PEM format!"
+            file /tmp/rfab-cert.cer
+            xxd /tmp/rfab-cert.cer | head -5
+            exit 1
+          fi
+
+          # Verify key matches cert
+          echo "=== DEBUG: Key-cert match check ==="
+          CERT_MOD=$(openssl x509 -in /tmp/peek-cert.pem -modulus -noout 2>/dev/null | md5)
+          KEY_MOD=$(openssl rsa -in /tmp/rfab-signing.key -modulus -noout 2>/dev/null | md5)
+          echo "Cert modulus hash: $CERT_MOD"
+          echo "Key modulus hash:  $KEY_MOD"
+          if [ "$CERT_MOD" != "$KEY_MOD" ]; then
+            echo "WARNING: Key and certificate modulus do NOT match!"
+          else
+            echo "OK: Key and certificate match"
+          fi
+
+          # Create p12
+          echo "=== DEBUG: Creating PKCS12 ==="
           openssl pkcs12 -export -legacy -out /tmp/peek-signing.p12 \
             -inkey /tmp/rfab-signing.key \
             -in /tmp/peek-cert.pem \
@@ -106,51 +141,78 @@ jobs:
             -inkey /tmp/rfab-signing.key \
             -in /tmp/peek-cert.pem \
             -name "Developer ID Application: Pragmatist Foundation (AFBVMK56D7)" \
-            -passout pass:peek
+            -passout pass:peek 2>&1
+          echo "P12 file size: $(wc -c < /tmp/peek-signing.p12) bytes"
 
-          security import /tmp/peek-signing.p12 -k "$KEYCHAIN_PATH" -P "peek" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          # Create and configure keychain
+          echo "=== DEBUG: Creating keychain ==="
+          KEYCHAIN_PATH="$HOME/Library/Keychains/build.keychain-db"
+          KEYCHAIN_PASS="ci-build-pass"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+          echo "=== DEBUG: Importing P12 ==="
+          security import /tmp/peek-signing.p12 -k "$KEYCHAIN_PATH" -P "peek" -T /usr/bin/codesign -f pkcs12 2>&1
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH" 2>&1
 
           # Add build keychain to search list
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
 
+          # List all identities
+          echo "=== DEBUG: All identities in keychain ==="
+          security find-identity -v "$KEYCHAIN_PATH" 2>&1
+          echo "=== DEBUG: Codesigning identities ==="
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" 2>&1
+
           # Find the signing identity
           CODESIGN_ID=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -1 | sed 's/.*"\(Developer ID Application: .*\)"/\1/')
-          echo "Found identity: $CODESIGN_ID"
+          echo "Found identity: [$CODESIGN_ID]"
 
-          if [ -n "$CODESIGN_ID" ]; then
-            # Sign all nested frameworks/dylibs first, then the app
-            find "$APP_PATH" -name "*.dylib" -o -name "*.so" -o -name "*.framework" | while read f; do
-              codesign --force --options runtime --sign "$CODESIGN_ID" "$f" 2>/dev/null || true
-            done
-            codesign --deep --force --options runtime \
-              --entitlements entitlements.plist \
-              --sign "$CODESIGN_ID" \
-              "$APP_PATH"
-            echo "Code signing complete"
-            echo "SIGNED=true" >> $GITHUB_ENV
-          else
-            echo "WARNING: No signing identity found"
-            security find-identity -v -p codesigning
+          if [ -z "$CODESIGN_ID" ]; then
+            echo "ERROR: No Developer ID Application identity found in keychain!"
+            echo "Listing all certs in keychain:"
+            security dump-keychain "$KEYCHAIN_PATH" 2>&1 | head -40
+            exit 1
           fi
+
+          # Sign all nested frameworks/dylibs first, then the app
+          echo "=== DEBUG: Signing nested binaries ==="
+          find "$APP_PATH" -name "*.dylib" -o -name "*.so" | while read f; do
+            echo "Signing: $f"
+            codesign --force --options runtime --sign "$CODESIGN_ID" "$f" 2>&1 || true
+          done
+
+          echo "=== DEBUG: Signing app bundle ==="
+          codesign --deep --force --options runtime \
+            --entitlements entitlements.plist \
+            --sign "$CODESIGN_ID" \
+            "$APP_PATH" 2>&1
+          echo "=== DEBUG: Verify signature ==="
+          codesign -vvv --deep --strict "$APP_PATH" 2>&1
+          spctl --assess --type exec -vvv "$APP_PATH" 2>&1 || true
+          echo "Code signing SUCCEEDED"
+          echo "SIGNED=true" >> $GITHUB_ENV
 
           rm -f /tmp/rfab-signing.key /tmp/rfab-cert.cer /tmp/peek-cert.pem /tmp/peek-signing.p12
 
       - name: Notarize
         if: env.SIGNED == 'true'
-        continue-on-error: true
         env:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
+          set -x
           APP_PATH=$(find dist -name "*.app" -type d | head -1)
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" /tmp/peek-notarize.zip
-          echo "Submitting for notarization (this may take 2-10 minutes)..."
+          echo "Zip size: $(wc -c < /tmp/peek-notarize.zip) bytes"
+          echo "Submitting for notarization..."
           xcrun notarytool submit /tmp/peek-notarize.zip \
             --apple-id "collinsmalcolm@gmail.com" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
             --team-id "AFBVMK56D7" \
-            --wait
-          xcrun stapler staple "$APP_PATH"
+            --wait --verbose 2>&1
+          echo "Stapling notarization ticket..."
+          xcrun stapler staple "$APP_PATH" 2>&1
           echo "Notarization complete and stapled"
           rm -f /tmp/peek-notarize.zip
 
@@ -161,6 +223,7 @@ jobs:
 
       - name: Create DMG
         run: |
+          brew install create-dmg
           APP_PATH=$(find dist -name "*.app" -type d | head -1)
           echo "Found app at: $APP_PATH"
           if [ -z "$APP_PATH" ]; then
@@ -168,16 +231,31 @@ jobs:
             ls -laR dist/
             exit 1
           fi
-          # Create DMG staging folder with app + Applications symlink
-          mkdir -p /tmp/dmg-staging
-          cp -R "$APP_PATH" /tmp/dmg-staging/
-          ln -s /Applications /tmp/dmg-staging/Applications
-          # Create DMG from staging folder (user sees app + Applications folder to drag into)
-          hdiutil create -volname "RFab Viewer" \
-            -srcfolder /tmp/dmg-staging \
-            -ov -format UDZO \
-            "dist/RFab Viewer.dmg"
-          rm -rf /tmp/dmg-staging
+          APP_NAME=$(basename "$APP_PATH")
+          # Use create-dmg for proper macOS DMG with Applications drop link
+          create-dmg \
+            --volname "RFab Viewer" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "$APP_NAME" 150 190 \
+            --app-drop-link 450 190 \
+            "dist/RFab Viewer.dmg" \
+            "$APP_PATH" \
+            || true
+          # Verify DMG was created
+          if [ ! -f "dist/RFab Viewer.dmg" ]; then
+            echo "create-dmg failed, falling back to hdiutil"
+            mkdir -p /tmp/dmg-staging
+            cp -R "$APP_PATH" /tmp/dmg-staging/
+            ln -s /Applications /tmp/dmg-staging/Applications
+            hdiutil create -volname "RFab Viewer" \
+              -srcfolder /tmp/dmg-staging \
+              -ov -format UDZO \
+              "dist/RFab Viewer.dmg"
+            rm -rf /tmp/dmg-staging
+          fi
+          ls -lh "dist/RFab Viewer.dmg"
 
       - name: Upload DMG as artifact (backup)
         uses: actions/upload-artifact@v4
