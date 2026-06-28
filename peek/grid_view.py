@@ -430,8 +430,7 @@ class GridView(ResizeMixin, QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._reposition_fs_btn()
-        # Debounce layout during resize for video robustness
-        self._layout_timer.start()
+        self._do_layout()
 
     def _show_floating_remove_btns(self):
         """Position and show floating remove buttons for video cells."""
