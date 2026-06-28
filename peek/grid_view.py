@@ -65,6 +65,7 @@ class GridCell(QFrame):
         self.aspect = aspect
         self.setStyleSheet("background-color: black;")
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         self._player = None
         self._audio = None
@@ -215,6 +216,7 @@ class GridCell(QFrame):
             # Set this cell as focused if it wasn't a drag
             if not was_dragging and parent and hasattr(parent, '_set_focused_cell'):
                 parent._set_focused_cell(self.index)
+                parent.setFocus()
 
     def mouseDoubleClickEvent(self, event):
         event.accept()
@@ -241,6 +243,7 @@ class GridView(ResizeMixin, QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setStyleSheet("background-color: #0a0a0a;")
         self.setMinimumSize(400, 300)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         self.file_paths = [Path(p) for p in file_paths]
         self._cells = []
@@ -306,6 +309,7 @@ class GridView(ResizeMixin, QWidget):
         # Default focused cell to last cell
         if self._cells:
             self._focused_cell_idx = len(self._cells) - 1
+        self.setFocus()
 
     def _do_layout(self):
         """Position cells using justified row layout -- images fill space perfectly."""
@@ -320,19 +324,25 @@ class GridView(ResizeMixin, QWidget):
             return
 
         n = len(self._aspects)
-        use_cols = 1
-        use_score = float('inf')
-        for tc in range(1, min(n, self._max_columns) + 1):
-            tr = _compute_rows(self._aspects, tc)
-            tg = _GAP * (len(tr) + 1)
-            nh = tg
-            for ri in tr:
-                nh += content_w / max(sum(self._aspects[k] for k in ri), 0.1)
-            sc = h / max(nh, 1)
-            s = abs(math.log(max(sc, 0.01)))
-            if s < use_score:
-                use_score = s
-                use_cols = tc
+        if self._layout_mode == '1row':
+            use_cols = n
+        elif self._layout_mode == '2row':
+            use_cols = max(1, math.ceil(n / 2))
+        else:
+            # Auto mode: find best column count by scoring
+            use_cols = 1
+            use_score = float('inf')
+            for tc in range(1, min(n, self._max_columns) + 1):
+                tr = _compute_rows(self._aspects, tc)
+                tg = _GAP * (len(tr) + 1)
+                nh = tg
+                for ri in tr:
+                    nh += content_w / max(sum(self._aspects[k] for k in ri), 0.1)
+                sc = h / max(nh, 1)
+                s = abs(math.log(max(sc, 0.01)))
+                if s < use_score:
+                    use_score = s
+                    use_cols = tc
 
         rows = _compute_rows(self._aspects, use_cols)
 
