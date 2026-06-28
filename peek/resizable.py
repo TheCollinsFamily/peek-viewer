@@ -501,24 +501,50 @@ class ResizeMixin:
 
     _DRAG_ZONE_HEIGHT = 50
 
+    def _edge_to_qt_edges(self, edge):
+        """Convert internal edge flags to Qt.Edge flags for startSystemResize."""
+        from PySide6.QtCore import Qt as _Qt
+        edges = _Qt.Edge(0)
+        if edge & _EDGE_LEFT:
+            edges |= _Qt.Edge.LeftEdge
+        if edge & _EDGE_RIGHT:
+            edges |= _Qt.Edge.RightEdge
+        if edge & _EDGE_TOP:
+            edges |= _Qt.Edge.TopEdge
+        if edge & _EDGE_BOTTOM:
+            edges |= _Qt.Edge.BottomEdge
+        return edges
+
     def _resize_mouse_press(self, event):
         """Call from mousePressEvent. Returns True if a resize or move drag started."""
         if event.button() != Qt.MouseButton.LeftButton:
             return False
-        import logging
-        _log = logging.getLogger('rfab_viewer')
 
         pos = event.position().toPoint()
         edge = _detect_edge(self, pos)
 
         if edge != _EDGE_NONE:
+            # Use native OS resize - much more reliable than manual tracking
+            wh = self.windowHandle()
+            if wh:
+                qt_edges = self._edge_to_qt_edges(edge)
+                _log.info(f'SYSTEM RESIZE: edge={edge} qt_edges={qt_edges}')
+                wh.startSystemResize(qt_edges)
+                return True
+            # Fallback to manual resize if windowHandle not available
             self._resize_edge = edge
             self._resize_start_pos = event.globalPosition().toPoint()
             self._resize_start_geo = self.geometry()
             return True
 
-        # Top drag zone acts like a title bar
+        # Top drag zone acts like a title bar - use native move
         if pos.y() <= self._DRAG_ZONE_HEIGHT:
+            wh = self.windowHandle()
+            if wh:
+                _log.info(f'SYSTEM MOVE: pos={pos.x()},{pos.y()}')
+                wh.startSystemMove()
+                return True
+            # Fallback to manual move
             self._move_drag_start = event.globalPosition().toPoint()
             self._resize_start_geo = self.geometry()
             _log.info(f'DRAG START: pos={pos.x()},{pos.y()}')
