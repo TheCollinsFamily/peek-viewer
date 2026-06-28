@@ -219,6 +219,9 @@ class GridCell(QFrame):
                 parent.setFocus()
 
     def mouseDoubleClickEvent(self, event):
+        parent = self.parentWidget()
+        if parent and hasattr(parent, '_toggle_fullscreen'):
+            parent._toggle_fullscreen()
         event.accept()
 
     def cleanup(self):
@@ -547,7 +550,7 @@ class GridView(ResizeMixin, QWidget):
             super().keyPressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
-        # Absorb double-clicks — do nothing (prevent default which re-fires mousePressEvent)
+        self._toggle_fullscreen()
         event.accept()
 
     def _toggle_fullscreen(self):
@@ -564,7 +567,7 @@ class GridView(ResizeMixin, QWidget):
         if not self._btn_bar:
             return
 
-        auto_btn = QPushButton("\u25a6", self._btn_bar)
+        auto_btn = QPushButton("\u2261", self._btn_bar)
         auto_btn.setFixedSize(28, 28)
         auto_btn.setStyleSheet(_WC_BTN_STYLE)
         auto_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -573,7 +576,7 @@ class GridView(ResizeMixin, QWidget):
         auto_btn.show()
         self._wc_buttons.insert(0, auto_btn)
 
-        row1_btn = QPushButton("\u25ac", self._btn_bar)
+        row1_btn = QPushButton("\u2501", self._btn_bar)
         row1_btn.setFixedSize(28, 28)
         row1_btn.setStyleSheet(_WC_BTN_STYLE)
         row1_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -582,7 +585,7 @@ class GridView(ResizeMixin, QWidget):
         row1_btn.show()
         self._wc_buttons.insert(1, row1_btn)
 
-        row2_btn = QPushButton("\u2261", self._btn_bar)
+        row2_btn = QPushButton("\u2550", self._btn_bar)
         row2_btn.setFixedSize(28, 28)
         row2_btn.setStyleSheet(_WC_BTN_STYLE)
         row2_btn.setCursor(Qt.CursorShape.PointingHandCursor)
