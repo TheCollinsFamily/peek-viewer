@@ -270,6 +270,7 @@ class ResizeMixin:
         self._btn_bar = None
         self._current_screen = None
         self._screen_transition_pending = False
+        self._no_button_count = 0  # grace counter for drag safety
         self.setMouseTracking(True)
         ResizeMixin._all_viewers.append(self)
         if ResizeMixin._merge_overlay is None:
@@ -408,30 +409,43 @@ class ResizeMixin:
         if self._btn_bar:
             self._btn_bar.reposition()
 
+    def _is_left_button_held(self, event):
+        """Check if left button is held using both event and global state (Windows workaround)."""
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self._no_button_count = 0
+            return True
+        # Fallback: check global mouse button state (more reliable on Windows)
+        if QApplication.mouseButtons() & Qt.MouseButton.LeftButton:
+            self._no_button_count = 0
+            return True
+        # Grace period: allow up to 3 consecutive no-button events before cancelling
+        self._no_button_count += 1
+        if self._no_button_count < 4:
+            return True
+        return False
+
     def _resize_mouse_move(self, event):
         """Call from mouseMoveEvent. Returns True if the event was consumed (resize/move in progress)."""
         if self._resize_edge != _EDGE_NONE and self._resize_start_pos is not None:
             # Safety: if left button no longer held, cancel resize
-            if not event.buttons() & Qt.MouseButton.LeftButton:
-                import logging
-                logging.getLogger('rfab_viewer').warning(
-                    'DRAG SAFETY: resize cancelled - no left button in move event')
+            if not self._is_left_button_held(event):
+                _log.warning('DRAG SAFETY: resize cancelled - no left button in move event')
                 self._resize_edge = _EDGE_NONE
                 self._resize_start_pos = None
                 self._resize_start_geo = None
+                self._no_button_count = 0
                 return True
             self._do_resize(event.globalPosition().toPoint())
             return True
 
         if self._move_drag_start is not None:
             # Safety: if left button no longer held, cancel drag
-            if not event.buttons() & Qt.MouseButton.LeftButton:
-                import logging
-                logging.getLogger('rfab_viewer').warning(
-                    'DRAG SAFETY: move_drag cancelled - no left button in move event')
+            if not self._is_left_button_held(event):
+                _log.warning('DRAG SAFETY: move_drag cancelled - no left button in move event')
                 self._move_drag_start = None
                 self._resize_start_geo = None
                 self._resize_edge = _EDGE_NONE
+                self._no_button_count = 0
                 if self._btn_bar:
                     from PySide6.QtCore import QTimer
                     QTimer.singleShot(50, self._safe_reshow_btn_bar)
