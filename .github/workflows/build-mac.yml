@@ -1,0 +1,143 @@
+name: Build macOS & Upload to S3
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:  # manual trigger from GitHub UI
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller PySide6 Pillow
+
+      - name: Generate macOS icon
+        run: |
+          python3 -c "
+          from PIL import Image
+          import subprocess, os
+
+          img = Image.open('peek.ico')
+          if hasattr(img, 'n_frames') and img.n_frames > 1:
+              best_size = 0
+              best_frame = 0
+              for i in range(img.n_frames):
+                  img.seek(i)
+                  if img.size[0] > best_size:
+                      best_size = img.size[0]
+                      best_frame = i
+              img.seek(best_frame)
+
+          img = img.convert('RGBA')
+          if img.size[0] < 1024:
+              img = img.resize((1024, 1024), Image.LANCZOS)
+          img.save('/tmp/peek_icon_1024.png', format='PNG')
+          img.close()
+
+          os.makedirs('peek.iconset', exist_ok=True)
+          for size, name in [
+              (16, 'icon_16x16.png'), (32, 'icon_16x16@2x.png'),
+              (32, 'icon_32x32.png'), (64, 'icon_32x32@2x.png'),
+              (128, 'icon_128x128.png'), (256, 'icon_128x128@2x.png'),
+              (256, 'icon_256x256.png'), (512, 'icon_256x256@2x.png'),
+              (512, 'icon_512x512.png'), (1024, 'icon_512x512@2x.png'),
+          ]:
+              subprocess.run(['sips', '-z', str(size), str(size), '/tmp/peek_icon_1024.png',
+                              '--out', f'peek.iconset/{name}'], capture_output=True)
+          "
+          iconutil -c icns peek.iconset
+          rm -rf peek.iconset
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --onedir --windowed \
+            --name "RFab Viewer" \
+            --icon peek.icns \
+            --add-data "peek:peek" \
+            --osx-bundle-identifier "com.rfab.viewer" \
+            --clean \
+            main.py
+
+      - name: Code sign (if credentials available)
+        if: env.APPLE_SIGNING_KEY != ''
+        env:
+          APPLE_SIGNING_KEY: ${{ secrets.APPLE_SIGNING_KEY }}
+          APPLE_SIGNING_CERT: ${{ secrets.APPLE_SIGNING_CERT }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          # Decode signing credentials
+          echo "$APPLE_SIGNING_KEY" | base64 -d > /tmp/rfab-signing.key
+          echo "$APPLE_SIGNING_CERT" | base64 -d > /tmp/rfab-cert.cer
+
+          # Import into keychain
+          openssl x509 -inform DER -in /tmp/rfab-cert.cer -out /tmp/peek-cert.pem 2>/dev/null || \
+          openssl x509 -inform PEM -in /tmp/rfab-cert.cer -out /tmp/peek-cert.pem 2>/dev/null
+
+          openssl pkcs12 -export -legacy -out /tmp/peek-signing.p12 \
+            -inkey /tmp/rfab-signing.key \
+            -in /tmp/peek-cert.pem \
+            -name "Developer ID Application: Pragmatist Foundation (AFBVMK56D7)" \
+            -passout pass:peek 2>/dev/null
+
+          security import /tmp/peek-signing.p12 -k ~/Library/Keychains/login.keychain-db -P "peek" -T /usr/bin/codesign 2>/dev/null || true
+
+          CODESIGN_ID=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | sed 's/.*"\(Developer ID Application: .*\)"/\1/')
+
+          if [ -n "$CODESIGN_ID" ]; then
+            echo "Signing with: $CODESIGN_ID"
+            codesign --deep --force --options runtime \
+              --sign "$CODESIGN_ID" \
+              "dist/RFab Viewer.app"
+            echo "SIGNED=true" >> $GITHUB_ENV
+          fi
+
+          rm -f /tmp/rfab-signing.key /tmp/rfab-cert.cer /tmp/peek-cert.pem /tmp/peek-signing.p12
+
+      - name: Notarize (if signed)
+        if: env.SIGNED == 'true'
+        env:
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent "dist/RFab Viewer.app" /tmp/peek-notarize.zip
+          xcrun notarytool submit /tmp/peek-notarize.zip \
+            --apple-id "collinsmalcolm@gmail.com" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "AFBVMK56D7" \
+            --wait
+          xcrun stapler staple "dist/RFab Viewer.app"
+          rm -f /tmp/peek-notarize.zip
+
+      - name: Create DMG
+        run: |
+          hdiutil create -volname "RFab Viewer" \
+            -srcfolder "dist/RFab Viewer.app" \
+            -ov -format UDZO \
+            "dist/RFab Viewer.dmg"
+
+      - name: Upload DMG to S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          pip install awscli
+          aws s3 cp "dist/RFab Viewer.dmg" "s3://rfab-media/downloads/RFab Viewer.dmg" \
+            --content-type "application/octet-stream" \
+            --content-disposition 'attachment; filename="RFab Viewer.dmg"'
+          echo ""
+          echo "✅ Uploaded to: https://rfab-media.s3.us-east-1.amazonaws.com/downloads/RFab Viewer.dmg"
+
+      - name: Upload DMG as artifact (backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: RFab-Viewer-macOS
+          path: dist/RFab Viewer.dmg
