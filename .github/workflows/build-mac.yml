@@ -196,27 +196,6 @@ jobs:
 
           rm -f /tmp/rfab-signing.key /tmp/rfab-cert.cer /tmp/peek-cert.pem /tmp/peek-signing.p12
 
-      - name: Notarize
-        if: env.SIGNED == 'true'
-        continue-on-error: true
-        env:
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-        run: |
-          set -x
-          APP_PATH=$(find dist -name "*.app" -type d | head -1)
-          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" /tmp/peek-notarize.zip
-          echo "Zip size: $(wc -c < /tmp/peek-notarize.zip) bytes"
-          echo "Submitting for notarization..."
-          xcrun notarytool submit /tmp/peek-notarize.zip \
-            --apple-id "collinsmalcolm@gmail.com" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --team-id "AFBVMK56D7" \
-            --wait --verbose 2>&1
-          echo "Stapling notarization ticket..."
-          xcrun stapler staple "$APP_PATH" 2>&1
-          echo "Notarization complete and stapled"
-          rm -f /tmp/peek-notarize.zip
-
       - name: List build output
         run: |
           echo "=== dist/ contents ==="
@@ -257,6 +236,48 @@ jobs:
             rm -rf /tmp/dmg-staging
           fi
           ls -lh "dist/RFab Viewer.dmg"
+
+      - name: Sign and notarize DMG
+        if: env.SIGNED == 'true'
+        env:
+          APPLE_SIGNING_KEY: ${{ secrets.APPLE_SIGNING_KEY }}
+          APPLE_SIGNING_CERT: ${{ secrets.APPLE_SIGNING_CERT }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -x
+
+          # Re-unlock keychain for DMG signing
+          KEYCHAIN_PATH="$HOME/Library/Keychains/build.keychain-db"
+          KEYCHAIN_PASS="ci-build-pass"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+          # Find the signing identity
+          CODESIGN_ID=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -1 | sed 's/.*"\(Developer ID Application: .*\)"/\1/')
+          echo "Signing DMG with identity: $CODESIGN_ID"
+
+          # Sign the DMG
+          codesign --force --sign "$CODESIGN_ID" "dist/RFab Viewer.dmg" 2>&1
+          echo "DMG signed successfully"
+          codesign -vvv "dist/RFab Viewer.dmg" 2>&1
+
+          # Notarize the DMG directly (not a zip)
+          echo "Submitting DMG for notarization..."
+          xcrun notarytool submit "dist/RFab Viewer.dmg" \
+            --apple-id "collinsmalcolm@gmail.com" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "AFBVMK56D7" \
+            --wait --verbose 2>&1
+
+          # Staple the notarization ticket to the DMG
+          echo "Stapling notarization ticket to DMG..."
+          xcrun stapler staple "dist/RFab Viewer.dmg" 2>&1
+
+          # Verify everything
+          echo "=== FINAL VERIFICATION ==="
+          codesign -vvv "dist/RFab Viewer.dmg" 2>&1
+          spctl --assess --type open --context context:primary-signature -vvv "dist/RFab Viewer.dmg" 2>&1 || true
+          xcrun stapler validate "dist/RFab Viewer.dmg" 2>&1
+          echo "DMG is signed, notarized, and stapled"
 
       - name: Upload DMG as artifact (backup)
         uses: actions/upload-artifact@v4
