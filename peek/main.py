@@ -18,11 +18,25 @@ from peek.utils import (
     IMAGE_EXTENSIONS, VIDEO_EXTENSIONS,
 )
 from peek.image_viewer import ImageViewer
-from peek.video_player import VideoPlayer
-from peek.grid_view import GridView
-from peek.slideshow import SlideshowView
-from peek.unzipper import unzip_folder
 from peek.boss_key import BossKey
+
+# Heavy modules loaded lazily to speed up image-only viewing:
+#   peek.video_player  -> PySide6.QtMultimedia + QtMultimediaWidgets
+#   peek.grid_view     -> PySide6.QtMultimedia + QtMultimediaWidgets + PIL
+#   peek.slideshow     -> PySide6.QtMultimedia + QtMultimediaWidgets + PIL
+#   peek.unzipper      -> zipfile
+
+def _get_video_player():
+    from peek.video_player import VideoPlayer
+    return VideoPlayer
+
+def _get_grid_view():
+    from peek.grid_view import GridView
+    return GridView
+
+def _get_slideshow_view():
+    from peek.slideshow import SlideshowView
+    return SlideshowView
 
 
 DARK_STYLE = """
@@ -517,6 +531,7 @@ class LauncherWindow(QMainWindow):
             self._track_window(viewer)
             viewer.show()
         elif is_video(file_path):
+            VideoPlayer = _get_video_player()
             player = VideoPlayer(file_path, file_list=file_list, loop=True)
             self._track_window(player)
             player.show()
@@ -563,6 +578,7 @@ class LauncherWindow(QMainWindow):
                 self._open_as_grid(paths)
 
     def _open_as_grid(self, files):
+        GridView = _get_grid_view()
         grid = GridView([str(f) for f in files], max_columns=config.get("grid_max_columns", 4))
         grid.cell_clicked.connect(self._on_grid_cell_clicked)
         self._track_window(grid)
@@ -573,6 +589,7 @@ class LauncherWindow(QMainWindow):
 
     def _open_grid_from_viewer(self, viewer):
         if viewer._file_list:
+            GridView = _get_grid_view()
             grid = GridView([str(f) for f in viewer._file_list], max_columns=config.get("grid_max_columns", 4))
             grid.cell_clicked.connect(self._on_grid_cell_clicked)
             self._track_window(grid)
@@ -597,12 +614,14 @@ class LauncherWindow(QMainWindow):
         config.set("slideshow_interval", interval)
         config.set("slideshow_order", order)
 
+        SlideshowView = _get_slideshow_view()
         show = SlideshowView([str(f) for f in files], interval=interval, order=order)
         self._track_window(show)
         show.show()
 
     def _start_slideshow_from_viewer(self, viewer):
         if viewer._file_list:
+            SlideshowView = _get_slideshow_view()
             interval = self._interval_spin.value()
             order = "random" if self._order_combo.currentIndex() == 1 else "sequential"
             show = SlideshowView(
@@ -651,6 +670,7 @@ class LauncherWindow(QMainWindow):
             QApplication.processEvents()
 
         # Step 1: Unzip all archives (delete ZIPs after if requested)
+        from peek.unzipper import unzip_folder
         results = unzip_folder(folder, recursive=recursive, delete_after=delete_after, progress_callback=on_progress)
 
         self._unzip_progress.setVisible(False)
@@ -909,6 +929,78 @@ class _IPCServer:
             self._sock.close()
 
 
+class _QuickHost(QObject):
+    """Lightweight host for CLI image viewing — avoids building the full LauncherWindow UI.
+    Provides viewer tracking, boss key, IPC, and auto-quit."""
+
+    def __init__(self):
+        super().__init__()
+        self._viewers = []
+        self._boss_key = BossKey(None)
+        self._launcher = None  # created on demand
+
+    def _open_single(self, file_path, file_list=None):
+        file_path = Path(file_path)
+        if is_image(file_path):
+            viewer = ImageViewer(file_path, file_list=file_list)
+            viewer.request_slideshow.connect(lambda: self._promote_to_launcher('slideshow', viewer))
+            viewer.request_grid.connect(lambda: self._promote_to_launcher('grid', viewer))
+            self._track_window(viewer)
+            viewer.show()
+        elif is_video(file_path):
+            VideoPlayer = _get_video_player()
+            player = VideoPlayer(file_path, file_list=file_list, loop=True)
+            self._track_window(player)
+            player.show()
+
+    def _open_as_grid(self, files):
+        GridView = _get_grid_view()
+        grid = GridView([str(f) for f in files], max_columns=config.get("grid_max_columns", 4))
+        self._track_window(grid)
+        grid.show()
+
+    def _track_window(self, window):
+        self._viewers.append(window)
+        self._boss_key.register_window(window)
+        window.closed.connect(lambda: self._remove_viewer(window))
+
+    def _remove_viewer(self, window):
+        if window in self._viewers:
+            self._viewers.remove(window)
+        if not self._viewers and (not self._launcher or not self._launcher.isVisible()):
+            QTimer.singleShot(500, self._maybe_quit)
+
+    def _maybe_quit(self):
+        from peek.resizable import ResizeMixin
+        if not self._viewers and not ResizeMixin._all_viewers:
+            if not self._launcher or not self._launcher.isVisible():
+                QApplication.quit()
+
+    def _promote_to_launcher(self, action, viewer):
+        """Create the full LauncherWindow on demand when advanced features are needed."""
+        if not self._launcher:
+            self._launcher = LauncherWindow()
+            # Transfer tracked windows
+            for v in self._viewers:
+                self._launcher._viewers.append(v)
+                self._launcher._boss_key.register_window(v)
+        if action == 'slideshow':
+            self._launcher._start_slideshow_from_viewer(viewer)
+        elif action == 'grid':
+            self._launcher._open_grid_from_viewer(viewer)
+
+    def show_launcher(self):
+        """Show the full launcher (called from Home button or IPC with no viewers)."""
+        if not self._launcher:
+            self._launcher = LauncherWindow()
+            for v in self._viewers:
+                self._launcher._viewers.append(v)
+                self._launcher._boss_key.register_window(v)
+        self._launcher.show()
+        self._launcher.raise_()
+        self._launcher.activateWindow()
+
+
 def main():
     import traceback, tempfile, os
     log_path = Path(tempfile.gettempdir()) / "rfab_viewer.log"
@@ -967,21 +1059,24 @@ def main():
         if icon_path.exists():
             app.setWindowIcon(QIcon(str(icon_path)))
 
-        window = LauncherWindow()
-
-        # Start IPC server so future instances send files here
-        ipc = _IPCServer(window)
-
+        # FAST PATH: When opening image files from CLI, skip building the full
+        # LauncherWindow (saves ~1-3s by not loading QtMultimedia and building
+        # slideshow/tools tabs). The full launcher is created on-demand if needed.
         if cli_files:
             with open(log_path, "a", encoding="utf-8") as log:
-                log.write(f"Opening viewer for: {cli_files}\n")
+                log.write(f"FAST PATH: Opening viewer for: {cli_files}\n")
+            host = _QuickHost()
+            host.setParent(app)  # so Home button can find it
+            ipc = _IPCServer(host)
             if len(cli_files) == 1:
-                window._open_single(cli_files[0])
+                host._open_single(cli_files[0])
             else:
-                window._open_as_grid(cli_files)
+                host._open_as_grid(cli_files)
         else:
             with open(log_path, "a", encoding="utf-8") as log:
                 log.write("Showing launcher\n")
+            window = LauncherWindow()
+            ipc = _IPCServer(window)
             window.show()
 
         ret = app.exec()

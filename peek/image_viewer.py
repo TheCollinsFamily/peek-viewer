@@ -5,7 +5,6 @@ from PySide6.QtGui import QPixmap, QImage, QPainter, QCursor, QAction, QKeySeque
 from PySide6.QtWidgets import (
     QWidget, QLabel, QApplication, QMenu, QSizePolicy,
 )
-from PIL import Image
 
 from peek.utils import get_media_files, is_image, is_video, is_media, fit_size
 from peek.resizable import ResizeMixin
@@ -103,6 +102,7 @@ class ImageViewer(ResizeMixin, QWidget):
             except Exception:
                 pass
         try:
+            from PIL import Image
             pil_img = Image.open(file_path)
             pil_img = pil_img.convert("RGBA")
             data = pil_img.tobytes("raw", "RGBA")

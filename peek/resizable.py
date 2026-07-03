@@ -378,12 +378,19 @@ class ResizeMixin:
         self._btn_bar.show()
 
     def _on_home_clicked(self):
+        # Check for LauncherWindow first
         for w in QApplication.topLevelWidgets():
             if w.__class__.__name__ == 'LauncherWindow':
                 w.show()
                 w.raise_()
                 w.activateWindow()
-                break
+                return
+        # Fast path: find _QuickHost and ask it to create/show the launcher
+        from PySide6.QtCore import QCoreApplication
+        for obj in QCoreApplication.instance().children():
+            if hasattr(obj, 'show_launcher'):
+                obj.show_launcher()
+                return
 
     def _on_minimize_clicked(self):
         if self._btn_bar:
