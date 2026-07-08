@@ -61,7 +61,8 @@ def flatten_folder(folder_path, delete_empty=True, prefix_folder=False, progress
 
     Returns dict with counts: moved, skipped, failed, removed_dirs.
     """
-    import shutil, os
+    import shutil, os, logging
+    _log = logging.getLogger('rfab_viewer')
     folder = Path(folder_path)
     if not folder.is_dir():
         return {"moved": 0, "skipped": 0, "failed": 0, "removed_dirs": 0}
@@ -71,6 +72,16 @@ def flatten_folder(folder_path, delete_empty=True, prefix_folder=False, progress
         f for f in folder.rglob("*")
         if f.is_file() and is_media(f) and f.parent != folder
     ]
+    # Also count non-media files that will be left behind
+    non_media_files = [
+        f for f in folder.rglob("*")
+        if f.is_file() and not is_media(f) and not is_archive(f) and f.parent != folder
+    ]
+    _log.info(f"FLATTEN: Found {len(media_files)} media files to move, "
+              f"{len(non_media_files)} non-media files will be left in place")
+    if non_media_files:
+        exts = set(f.suffix.lower() for f in non_media_files)
+        _log.info(f"FLATTEN: Non-media extensions found: {exts}")
 
     moved = 0
     skipped = 0
@@ -110,7 +121,8 @@ def flatten_folder(folder_path, delete_empty=True, prefix_folder=False, progress
             if orig_mtime is not None:
                 os.utime(str(dst), (orig_atime, orig_mtime))
             moved += 1
-        except Exception:
+        except Exception as e:
+            _log.error(f"FLATTEN: Failed to move '{src.name}': {e}")
             failed += 1
 
         if progress_callback:

@@ -102,12 +102,19 @@ class ImageViewer(ResizeMixin, QWidget):
             except Exception:
                 pass
         try:
+            import time as _t, logging as _logging
+            _tlog = _logging.getLogger('rfab_viewer')
+            _t0 = _t.perf_counter()
             from PIL import Image
+            _t1 = _t.perf_counter()
+            _tlog.debug(f"TIMING: PIL import took {_t1 - _t0:.3f}s")
             pil_img = Image.open(file_path)
             pil_img = pil_img.convert("RGBA")
             data = pil_img.tobytes("raw", "RGBA")
             qimg = QImage(data, pil_img.width, pil_img.height, QImage.Format.Format_RGBA8888)
             self._pixmap = QPixmap.fromImage(qimg.copy())
+            _t2 = _t.perf_counter()
+            _tlog.debug(f"TIMING: image decode took {_t2 - _t1:.3f}s ({pil_img.width}x{pil_img.height})")
             self._zoom = 1.0
             self._pan_offset = QPoint(0, 0)
             self._render()

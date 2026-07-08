@@ -466,6 +466,36 @@ class LauncherWindow(QMainWindow):
 
         layout.addWidget(flatten_group)
 
+        # Duplicate finder section
+        dedup_group = QGroupBox("Delete Duplicates")
+        dedup_layout = QVBoxLayout(dedup_group)
+        dedup_layout.setSpacing(8)
+
+        dedup_desc = QLabel("Find and delete duplicate images/videos in a folder by file hash. "
+                            "Keeps the first copy found (alphabetical order).")
+        dedup_desc.setObjectName("subtitle")
+        dedup_desc.setWordWrap(True)
+        dedup_layout.addWidget(dedup_desc)
+
+        self._dedup_recursive_check = QCheckBox("Search subfolders")
+        self._dedup_recursive_check.setChecked(True)
+        dedup_layout.addWidget(self._dedup_recursive_check)
+
+        dedup_btn_row = QHBoxLayout()
+        dedup_btn = QPushButton("Pick Folder & Find Duplicates")
+        dedup_btn.setObjectName("accent")
+        dedup_btn.clicked.connect(self._find_duplicates)
+        dedup_btn_row.addWidget(dedup_btn)
+        dedup_btn_row.addStretch()
+        dedup_layout.addLayout(dedup_btn_row)
+
+        self._dedup_progress = QProgressBar()
+        self._dedup_progress.setVisible(False)
+        self._dedup_progress.setMaximumHeight(20)
+        dedup_layout.addWidget(self._dedup_progress)
+
+        layout.addWidget(dedup_group)
+
         layout.addStretch()
 
         hint = QLabel("Boss Key:  Ctrl+`  hides all windows instantly")
@@ -676,25 +706,43 @@ class LauncherWindow(QMainWindow):
         self._unzip_progress.setVisible(False)
 
         if flatten_after:
+            import logging as _logging
+            _ulog = _logging.getLogger('rfab_viewer')
             # Step 2: Flatten — move all media from subfolders to root, prefix with folder name
             from peek.utils import flatten_folder
+            _ulog.info(f"UNZIP+FLATTEN: Starting flatten of '{folder}'")
             flatten_results = flatten_folder(
                 folder, delete_empty=True, prefix_folder=True, progress_callback=None
             )
-            # Step 3: Delete any remaining ZIPs that were skipped
+            _ulog.info(f"UNZIP+FLATTEN: Flatten done — moved={flatten_results['moved']}, "
+                       f"failed={flatten_results['failed']}, removed_dirs={flatten_results['removed_dirs']}")
+            # Step 3: Delete remaining ZIPs that were NOT failed extractions
+            failed_set = set(results.get('failed_archives', []))
             remaining_zips = get_archive_files(folder, recursive=recursive)
+            deleted_zips = 0
+            kept_zips = 0
             for arc in remaining_zips:
-                try:
-                    Path(arc).unlink()
-                except Exception:
-                    pass
+                arc_path = Path(arc)
+                if str(arc_path) in failed_set:
+                    _ulog.warning(f"UNZIP+FLATTEN: KEEPING failed archive '{arc_path.name}' (extraction failed)")
+                    kept_zips += 1
+                else:
+                    try:
+                        arc_path.unlink()
+                        deleted_zips += 1
+                    except Exception as e:
+                        _ulog.error(f"UNZIP+FLATTEN: Could not delete '{arc_path.name}': {e}")
+            _ulog.info(f"UNZIP+FLATTEN: Cleaned up {deleted_zips} ZIPs, kept {kept_zips} failed ZIPs")
             msg = (
                 f"Done! (Unzipped & Flattened)\n\n"
                 f"Extracted: {results['success']} archives\n"
                 f"Skipped: {results['skipped']}\n"
+                f"Failed: {results['failed']}\n"
                 f"Flattened: {flatten_results['moved']} files\n"
                 f"Folders removed: {flatten_results['removed_dirs']}"
             )
+            if results['failed'] > 0:
+                msg += f"\n\n⚠ {results['failed']} archive(s) failed to extract and were kept."
         else:
             msg = f"Done!\n\nExtracted: {results['success']}\nSkipped: {results['skipped']}\nFailed: {results['failed']}"
         QMessageBox.information(self, "Unzip Complete", msg)
@@ -762,6 +810,110 @@ class LauncherWindow(QMainWindow):
         if delete_empty:
             msg += f"\nEmpty folders removed: {results['removed_dirs']}"
         QMessageBox.information(self, "Flatten Complete", msg)
+
+    # --- Duplicate Finder ---
+
+    def _find_duplicates(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Folder to Scan for Duplicates")
+        if not folder:
+            return
+
+        import hashlib, logging as _logging
+        _dlog = _logging.getLogger('rfab_viewer')
+        recursive = self._dedup_recursive_check.isChecked()
+        folder_path = Path(folder)
+
+        # Collect all media files
+        if recursive:
+            all_files = sorted(
+                [f for f in folder_path.rglob("*") if f.is_file() and is_media(f)],
+                key=lambda p: str(p).lower()
+            )
+        else:
+            all_files = sorted(
+                [f for f in folder_path.iterdir() if f.is_file() and is_media(f)],
+                key=lambda p: str(p).lower()
+            )
+
+        if not all_files:
+            QMessageBox.information(self, "No Media", "No media files found in this folder.")
+            return
+
+        _dlog.info(f"DEDUP: Scanning {len(all_files)} media files in '{folder}' (recursive={recursive})")
+
+        self._dedup_progress.setMaximum(len(all_files))
+        self._dedup_progress.setValue(0)
+        self._dedup_progress.setVisible(True)
+
+        # Hash each file (first 64KB + last 64KB + file size for speed)
+        hash_map = {}  # hash -> first file path
+        duplicates = []  # list of duplicate paths
+        CHUNK = 65536
+
+        for i, fpath in enumerate(all_files):
+            self._dedup_progress.setValue(i + 1)
+            self._dedup_progress.setFormat(f"Hashing... ({i + 1}/{len(all_files)})")
+            if i % 50 == 0:
+                QApplication.processEvents()
+
+            try:
+                fsize = fpath.stat().st_size
+                h = hashlib.md5()
+                h.update(str(fsize).encode())
+                with open(fpath, 'rb') as f:
+                    head = f.read(CHUNK)
+                    h.update(head)
+                    if fsize > CHUNK * 2:
+                        f.seek(-CHUNK, 2)
+                        tail = f.read(CHUNK)
+                        h.update(tail)
+                    elif fsize > CHUNK:
+                        tail = f.read()
+                        h.update(tail)
+
+                digest = h.hexdigest()
+                if digest in hash_map:
+                    duplicates.append(fpath)
+                    _dlog.info(f"DEDUP: Duplicate found: '{fpath.name}' == '{hash_map[digest].name}'")
+                else:
+                    hash_map[digest] = fpath
+            except Exception as e:
+                _dlog.error(f"DEDUP: Error hashing '{fpath}': {e}")
+
+        self._dedup_progress.setVisible(False)
+
+        if not duplicates:
+            QMessageBox.information(self, "No Duplicates", f"Scanned {len(all_files)} files — no duplicates found.")
+            return
+
+        # Ask user for confirmation
+        total_size = sum(f.stat().st_size for f in duplicates)
+        size_mb = total_size / (1024 * 1024)
+        reply = QMessageBox.question(
+            self, "Duplicates Found",
+            f"Found {len(duplicates)} duplicate files ({size_mb:.1f} MB).\n\n"
+            f"The first copy (alphabetical) of each file will be kept.\n"
+            f"Delete the {len(duplicates)} duplicates?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        deleted = 0
+        failed = 0
+        for fpath in duplicates:
+            try:
+                fpath.unlink()
+                deleted += 1
+            except Exception as e:
+                _dlog.error(f"DEDUP: Failed to delete '{fpath}': {e}")
+                failed += 1
+
+        _dlog.info(f"DEDUP: Done — deleted={deleted}, failed={failed}")
+        msg = f"Done!\n\nDeleted: {deleted} duplicates ({size_mb:.1f} MB freed)"
+        if failed:
+            msg += f"\nFailed to delete: {failed}"
+        QMessageBox.information(self, "Duplicates Removed", msg)
 
     # --- File association ---
 
@@ -1002,7 +1154,8 @@ class _QuickHost(QObject):
 
 
 def main():
-    import traceback, tempfile, os
+    import traceback, tempfile, os, time as _time
+    _t0 = _time.perf_counter()
     log_path = Path(tempfile.gettempdir()) / "rfab_viewer.log"
 
     # Configure Python logging module with immediate flush
@@ -1024,6 +1177,7 @@ def main():
     try:
         with open(log_path, "a", encoding="utf-8") as log:
             log.write(f"\n--- Launch: {sys.argv}\n")
+            log.write(f"TIMING: imports done at {_time.perf_counter() - _t0:.3f}s\n")
 
         # Handle files passed via command-line (e.g. "Open With" from Explorer)
         # Try individual args first, then try joining all args as one path (spaces in path)
@@ -1036,6 +1190,7 @@ def main():
 
         with open(log_path, "a", encoding="utf-8") as log:
             log.write(f"cli_files: {cli_files}\n")
+            log.write(f"TIMING: cli parse at {_time.perf_counter() - _t0:.3f}s\n")
 
         # Single-instance: if files given and another instance is running, hand off to it
         if cli_files and _try_send_to_existing(cli_files):
@@ -1065,6 +1220,7 @@ def main():
         if cli_files:
             with open(log_path, "a", encoding="utf-8") as log:
                 log.write(f"FAST PATH: Opening viewer for: {cli_files}\n")
+                log.write(f"TIMING: pre-viewer at {_time.perf_counter() - _t0:.3f}s\n")
             host = _QuickHost()
             host.setParent(app)  # so Home button can find it
             ipc = _IPCServer(host)
@@ -1072,6 +1228,8 @@ def main():
                 host._open_single(cli_files[0])
             else:
                 host._open_as_grid(cli_files)
+            with open(log_path, "a", encoding="utf-8") as log:
+                log.write(f"TIMING: viewer shown at {_time.perf_counter() - _t0:.3f}s\n")
         else:
             with open(log_path, "a", encoding="utf-8") as log:
                 log.write("Showing launcher\n")

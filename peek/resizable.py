@@ -282,6 +282,21 @@ class ResizeMixin:
             self._current_screen = QApplication.primaryScreen()
         # Connect screenChanged signal after first show (windowHandle needs show)
         self._screen_transitioning = False
+        self._screen_transition_cooldown = 0
+        QTimer.singleShot(500, self._connect_screen_signal)
+
+    def _connect_screen_signal(self):
+        """Connect the screenChanged signal once the window handle is available."""
+        try:
+            wh = self.windowHandle()
+            if wh:
+                wh.screenChanged.connect(self._on_screen_changed_live)
+                _log.info("SCREEN TRANSITION: signal connected")
+            else:
+                # Window not yet shown, retry
+                QTimer.singleShot(500, self._connect_screen_signal)
+        except Exception as e:
+            _log.warning(f"SCREEN TRANSITION: failed to connect signal: {e}")
 
     def _on_screen_changed_live(self, new_screen):
         """Called in real-time when Qt detects the window moved to a new screen.
@@ -322,6 +337,58 @@ class ResizeMixin:
 
         # 3. After Qt settles the DPI change, snap to new screen and restore
         QTimer.singleShot(600, lambda: self._finish_screen_transition(new_screen))
+
+    def _finish_screen_transition(self, new_screen):
+        """Restore content after a screen transition has settled."""
+        import time
+        self._screen_transition_cooldown = time.time()
+        self._screen_transitioning = False
+        self._current_screen = new_screen
+
+        # Restore hidden children
+        for child in self.findChildren(QWidget):
+            if child is not getattr(self, '_grab_handle', None):
+                child.show()
+
+        # Fit to new screen
+        if new_screen:
+            avail = new_screen.availableGeometry()
+            geo = self.geometry()
+            max_w = int(avail.width() * 0.92)
+            max_h = int(avail.height() * 0.92)
+            new_w = min(geo.width(), max_w)
+            new_h = min(geo.height(), max_h)
+            x = avail.x() + (avail.width() - new_w) // 2
+            y = avail.y() + (avail.height() - new_h) // 2
+            self.setGeometry(x, y, new_w, new_h)
+
+        # Re-show button bar
+        if self._btn_bar:
+            QTimer.singleShot(50, self._safe_reshow_btn_bar)
+
+        # Force re-render of content at new dimensions
+        # Schedule slightly after show() so geometry is settled
+        QTimer.singleShot(100, self._force_rerender_after_transition)
+
+        # Reconnect screen change signal
+        try:
+            wh = self.windowHandle()
+            if wh:
+                wh.screenChanged.connect(self._on_screen_changed_live)
+        except Exception:
+            pass
+
+        _log.info("SCREEN TRANSITION: finished, content restored")
+
+    def _force_rerender_after_transition(self):
+        """Force content to re-render at the current geometry after a screen transition."""
+        from PySide6.QtGui import QResizeEvent
+        from PySide6.QtCore import QSize
+        size = self.size()
+        # Trigger resizeEvent which causes _render() in ImageViewer
+        event = QResizeEvent(size, size)
+        self.resizeEvent(event)
+        _log.info(f"SCREEN TRANSITION: forced re-render at {size.width()}x{size.height()}")
 
     def _create_fullscreen_btn(self):
         # Grab handle for window dragging
