@@ -481,13 +481,10 @@ class LauncherWindow(QMainWindow):
         self._dedup_recursive_check.setChecked(True)
         dedup_layout.addWidget(self._dedup_recursive_check)
 
-        dedup_btn_row = QHBoxLayout()
-        dedup_btn = QPushButton("Pick Folder & Find Duplicates")
+        dedup_btn = QPushButton("Pick Folder and Delete Copies")
         dedup_btn.setObjectName("accent")
         dedup_btn.clicked.connect(self._find_duplicates)
-        dedup_btn_row.addWidget(dedup_btn)
-        dedup_btn_row.addStretch()
-        dedup_layout.addLayout(dedup_btn_row)
+        dedup_layout.addWidget(dedup_btn)
 
         self._dedup_progress = QProgressBar()
         self._dedup_progress.setVisible(False)
