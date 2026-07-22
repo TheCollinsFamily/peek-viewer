@@ -7,6 +7,21 @@ from peek.utils import get_archive_files
 _log = logging.getLogger('rfab_viewer')
 
 
+def safe_extract_dir(archive_path):
+    """Extraction folder for an archive, with a Windows-safe name.
+
+    Windows silently strips trailing spaces/dots when creating a directory,
+    so a ZIP named "Foo .zip" would extract into "Foo " -> mkdir creates
+    "Foo" but the member paths still reference "Foo " and every file write
+    fails with Errno 2. Strip trailing spaces/dots up front.
+    """
+    archive_path = Path(archive_path)
+    name = archive_path.stem.rstrip(' .')
+    if not name:
+        name = "extracted"
+    return archive_path.parent / name
+
+
 def unzip_folder(folder_path, recursive=False, delete_after=False, progress_callback=None):
     folder = Path(folder_path)
     archives = get_archive_files(folder, recursive=recursive)
@@ -23,7 +38,7 @@ def unzip_folder(folder_path, recursive=False, delete_after=False, progress_call
 
     for i, archive_path in enumerate(archives):
         archive_path = Path(archive_path)
-        extract_dir = archive_path.parent / archive_path.stem
+        extract_dir = safe_extract_dir(archive_path)
 
         if extract_dir.exists() and any(extract_dir.iterdir()):
             results["skipped"] += 1
@@ -40,7 +55,16 @@ def unzip_folder(folder_path, recursive=False, delete_after=False, progress_call
         try:
             extract_dir.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(archive_path, "r") as zf:
-                zf.extractall(extract_dir)
+                # Extract member-by-member so the progress callback can keep
+                # the UI responsive on large archives (extractall blocks for
+                # the whole archive and Windows flags the app as hung)
+                members = zf.infolist()
+                for j, member in enumerate(members):
+                    zf.extract(member, extract_dir)
+                    if progress_callback and j % 25 == 0:
+                        progress_callback(i + 1, results["total"],
+                                          f"{archive_path.name} ({j + 1}/{len(members)})",
+                                          "extracting")
 
             file_count = len(list(extract_dir.rglob("*")))
             results["success"] += 1

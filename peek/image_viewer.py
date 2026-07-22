@@ -89,10 +89,13 @@ class ImageViewer(ResizeMixin, QWidget):
                     self._pixmap = None
                     self._movie = movie
                     self._movie.setCacheMode(QMovie.CacheMode.CacheAll)
+                    from peek.grid_view import _movie_native_size
+                    self._movie_size = _movie_native_size(movie, file_path)
                     w, h = self.width(), self.height()
                     if w > 0 and h > 0:
                         from PySide6.QtCore import QSize
-                        self._movie.setScaledSize(QSize(w, h))
+                        fw, fh = fit_size(self._movie_size[0], self._movie_size[1], w, h)
+                        self._movie.setScaledSize(QSize(fw, fh))
                     self._label.setGeometry(0, 0, max(w, 1), max(h, 1))
                     self._label.setMovie(self._movie)
                     self._movie.start()
@@ -180,7 +183,9 @@ class ImageViewer(ResizeMixin, QWidget):
         self._label.setGeometry(0, 0, w, h)
         if self._movie:
             from PySide6.QtCore import QSize
-            self._movie.setScaledSize(QSize(w, h))
+            mw, mh = getattr(self, '_movie_size', (w, h))
+            fw, fh = fit_size(mw, mh, w, h)
+            self._movie.setScaledSize(QSize(fw, fh))
         else:
             self._render()
 
@@ -217,8 +222,11 @@ class ImageViewer(ResizeMixin, QWidget):
         self._render()
 
     def mousePressEvent(self, event):
-        if self._resize_mouse_press(event):
-            self._resize_active = True
+        started = self._resize_mouse_press(event)
+        if started:
+            # Native system move/resize never delivers a mouseReleaseEvent,
+            # so only manual (tracked) drags may hold _resize_active.
+            self._resize_active = (started == 'manual')
             return
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = event.globalPosition().toPoint()

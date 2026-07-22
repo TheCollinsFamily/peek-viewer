@@ -29,6 +29,16 @@ _REMOVE_BTN_STYLE = (
 )
 
 
+def _movie_native_size(movie, file_path):
+    """Native (w, h) of an animated GIF, for aspect-fit scaling."""
+    from PySide6.QtGui import QImageReader
+    sz = QImageReader(str(file_path)).size()
+    if not sz.isValid() or sz.width() <= 0 or sz.height() <= 0:
+        movie.jumpToFrame(0)
+        sz = movie.currentImage().size()
+    return (max(sz.width(), 1), max(sz.height(), 1))
+
+
 def _get_aspect(fp):
     """Get width/height aspect ratio of a file."""
     if is_image(fp):
@@ -43,13 +53,22 @@ def _get_aspect(fp):
 
 
 def _compute_rows(aspects, max_cols):
-    """Partition images into rows of at most max_cols each."""
+    """Partition images into rows of at most max_cols each, balancing counts
+    across rows (5 images at 4 cols -> 3+2, not 4+1) so no row's cells end up
+    wildly larger than the others."""
+    n = len(aspects)
+    if n == 0:
+        return []
+    max_cols = max(1, max_cols)
+    num_rows = math.ceil(n / max_cols)
+    base = n // num_rows
+    extra = n % num_rows
     rows = []
     i = 0
-    n = len(aspects)
-    while i < n:
-        rows.append(list(range(i, min(i + max_cols, n))))
-        i += max_cols
+    for r in range(num_rows):
+        count = base + (1 if r < extra else 0)
+        rows.append(list(range(i, i + count)))
+        i += count
     return rows
 
 
@@ -121,6 +140,7 @@ class GridCell(QFrame):
                 if movie.isValid():
                     self._movie = movie
                     self._movie.setCacheMode(QMovie.CacheMode.CacheAll)
+                    self._movie_size = _movie_native_size(movie, self.file_path)
                     label.setMovie(self._movie)
                     self._movie.start()
                     self._pixmap = None
@@ -170,14 +190,19 @@ class GridCell(QFrame):
             self._label.setGeometry(0, 0, w, h)
             if getattr(self, '_movie', None):
                 from PySide6.QtCore import QSize
-                self._movie.setScaledSize(QSize(w, h))
+                mw, mh = getattr(self, '_movie_size', (w, h))
+                fw, fh = fit_size(mw, mh, w, h)
+                self._movie.setScaledSize(QSize(fw, fh))
             elif self._pixmap:
-                # Skip scaling entirely during active resize for smooth drag
+                # Fast scaling during active resize/drag, smooth otherwise.
+                # Never skip: a skipped first render leaves the cell black.
                 parent = self.parentWidget()
-                if getattr(parent, '_resize_active', False):
-                    return
+                resizing = (getattr(parent, '_resize_active', False)
+                            or bool(QApplication.mouseButtons() & Qt.MouseButton.LeftButton))
+                mode = (Qt.TransformationMode.FastTransformation if resizing
+                        else Qt.TransformationMode.SmoothTransformation)
                 fw, fh = fit_size(self._pixmap.width(), self._pixmap.height(), w, h)
-                scaled = self._pixmap.scaled(fw, fh, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                scaled = self._pixmap.scaled(fw, fh, Qt.AspectRatioMode.KeepAspectRatio, mode)
                 self._label.setPixmap(scaled)
 
         if hasattr(self, "_video_widget"):
@@ -256,11 +281,12 @@ class GridView(ResizeMixin, QWidget):
 
         # Drag reorder state
         self._drag_cell = None
-        # Debounce timer for layout during resize (video robustness)
-        self._layout_timer = QTimer(self)
-        self._layout_timer.setSingleShot(True)
-        self._layout_timer.setInterval(80)
-        self._layout_timer.timeout.connect(self._do_layout)
+        # Debounced smooth re-render after resize settles (cells render fast
+        # during the drag; this restores full quality shortly afterwards)
+        self._smooth_timer = QTimer(self)
+        self._smooth_timer.setSingleShot(True)
+        self._smooth_timer.setInterval(150)
+        self._smooth_timer.timeout.connect(self._finalize_resize)
         self._drag_start_pos = None
         self._dragging = False
 
@@ -472,6 +498,7 @@ class GridView(ResizeMixin, QWidget):
         super().resizeEvent(event)
         self._reposition_fs_btn()
         self._do_layout()
+        self._smooth_timer.start()
 
     def _show_floating_remove_btns(self):
         """Position and show floating remove buttons for video cells."""
@@ -523,8 +550,11 @@ class GridView(ResizeMixin, QWidget):
             QTimer.singleShot(200, self._safe_reshow_btn_bar)
 
     def mousePressEvent(self, event):
-        if self._resize_mouse_press(event):
-            self._resize_active = True
+        started = self._resize_mouse_press(event)
+        if started:
+            # Native system move/resize never delivers a mouseReleaseEvent,
+            # so only manual (tracked) drags may hold _resize_active.
+            self._resize_active = (started == 'manual')
             return
         super().mousePressEvent(event)
 
@@ -726,7 +756,9 @@ class GridView(ResizeMixin, QWidget):
             cell._label.show()
             if getattr(cell, '_movie', None):
                 from PySide6.QtCore import QSize
-                cell._movie.setScaledSize(QSize(w, h))
+                mw, mh = getattr(cell, '_movie_size', (w, h))
+                fw, fh = fit_size(mw, mh, w, h)
+                cell._movie.setScaledSize(QSize(fw, fh))
             elif cell._pixmap:
                 fw, fh = fit_size(cell._pixmap.width(), cell._pixmap.height(), w, h)
                 scaled = cell._pixmap.scaled(fw, fh, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)

@@ -708,9 +708,21 @@ class LauncherWindow(QMainWindow):
             # Step 2: Flatten — move all media from subfolders to root, prefix with folder name
             from peek.utils import flatten_folder
             _ulog.info(f"UNZIP+FLATTEN: Starting flatten of '{folder}'")
+
+            # Keep the UI responsive while thousands of files move
+            def on_flatten_progress(name, current, total):
+                if current % 20 == 0 or current == total:
+                    self._unzip_progress.setMaximum(total)
+                    self._unzip_progress.setValue(current)
+                    self._unzip_progress.setFormat(f"Flattening... ({current}/{total})")
+                    QApplication.processEvents()
+
+            self._unzip_progress.setVisible(True)
             flatten_results = flatten_folder(
-                folder, delete_empty=True, prefix_folder=True, progress_callback=None
+                folder, delete_empty=True, prefix_folder=True,
+                progress_callback=on_flatten_progress
             )
+            self._unzip_progress.setVisible(False)
             _ulog.info(f"UNZIP+FLATTEN: Flatten done — moved={flatten_results['moved']}, "
                        f"failed={flatten_results['failed']}, removed_dirs={flatten_results['removed_dirs']}")
             # Step 3: Delete remaining ZIPs that were NOT failed extractions
@@ -745,10 +757,10 @@ class LauncherWindow(QMainWindow):
         QMessageBox.information(self, "Unzip Complete", msg)
 
     def _unzip_single(self, archive_path):
-        from peek.unzipper import unzip_folder as _unzip
+        from peek.unzipper import safe_extract_dir
         import zipfile
         archive_path = Path(archive_path)
-        extract_dir = archive_path.parent / archive_path.stem
+        extract_dir = safe_extract_dir(archive_path)
         try:
             extract_dir.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(archive_path, "r") as zf:
@@ -870,12 +882,36 @@ class LauncherWindow(QMainWindow):
 
                 digest = h.hexdigest()
                 if digest in hash_map:
-                    duplicates.append(fpath)
+                    duplicates.append((fpath, hash_map[digest]))
                     _dlog.info(f"DEDUP: Duplicate found: '{fpath.name}' == '{hash_map[digest].name}'")
                 else:
                     hash_map[digest] = fpath
             except Exception as e:
                 _dlog.error(f"DEDUP: Error hashing '{fpath}': {e}")
+
+        # The quick hash only covers size + first/last 64KB — verify full
+        # content before offering to delete, so a collision never deletes a
+        # file that isn't actually a duplicate.
+        def _full_digest(p):
+            fh = hashlib.md5()
+            with open(p, 'rb') as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                    fh.update(chunk)
+            return fh.hexdigest()
+
+        confirmed_dupes = []
+        for i, (dup, original) in enumerate(duplicates):
+            self._dedup_progress.setFormat(f"Verifying... ({i + 1}/{len(duplicates)})")
+            QApplication.processEvents()
+            try:
+                if _full_digest(dup) == _full_digest(original):
+                    confirmed_dupes.append(dup)
+                else:
+                    _dlog.warning(f"DEDUP: False positive — '{dup.name}' differs from "
+                                  f"'{original.name}' on full hash, keeping it")
+            except Exception as e:
+                _dlog.error(f"DEDUP: Error verifying '{dup}': {e}")
+        duplicates = confirmed_dupes
 
         self._dedup_progress.setVisible(False)
 

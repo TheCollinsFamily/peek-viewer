@@ -590,7 +590,9 @@ class ResizeMixin:
         return edges
 
     def _resize_mouse_press(self, event):
-        """Call from mousePressEvent. Returns True if a resize or move drag started."""
+        """Call from mousePressEvent. Returns 'system' if a native resize/move
+        started (NO mouseReleaseEvent will be delivered afterwards), 'manual'
+        if a tracked fallback drag started, False otherwise. Both truthy."""
         if event.button() != Qt.MouseButton.LeftButton:
             return False
 
@@ -604,12 +606,12 @@ class ResizeMixin:
                 qt_edges = self._edge_to_qt_edges(edge)
                 _log.info(f'SYSTEM RESIZE: edge={edge} qt_edges={qt_edges}')
                 wh.startSystemResize(qt_edges)
-                return True
+                return 'system'
             # Fallback to manual resize if windowHandle not available
             self._resize_edge = edge
             self._resize_start_pos = event.globalPosition().toPoint()
             self._resize_start_geo = self.geometry()
-            return True
+            return 'manual'
 
         # Top drag zone acts like a title bar - use native move
         if pos.y() <= self._DRAG_ZONE_HEIGHT:
@@ -617,12 +619,12 @@ class ResizeMixin:
             if wh:
                 _log.info(f'SYSTEM MOVE: pos={pos.x()},{pos.y()}')
                 wh.startSystemMove()
-                return True
+                return 'system'
             # Fallback to manual move
             self._move_drag_start = event.globalPosition().toPoint()
             self._resize_start_geo = self.geometry()
             _log.info(f'DRAG START: pos={pos.x()},{pos.y()}')
-            return True
+            return 'manual'
 
         return False
 
