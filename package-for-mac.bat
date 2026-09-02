@@ -32,7 +32,7 @@ if exist "%OUTPUT%" (
     echo For SIGNED builds, also send them:
     echo   - rfab-signing.key
     echo   - developerID_application.cer
-    echo   (from: C:\Users\Merry\.windsurf\Reality Fabricator\rf-bridge\)
+    echo   (from: C:\Users\Merry\dev\reality-fabricator\rf-bridge\)
 ) else (
     echo ERROR: Failed to create zip
 )
