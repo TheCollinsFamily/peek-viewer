@@ -1009,7 +1009,12 @@ class LauncherWindow(QMainWindow):
         super().closeEvent(event)
 
 
-_IPC_PORT = 52184  # local port for single-instance communication
+_fault_log = None  # file handle faulthandler writes to
+
+# local port for single-instance communication (env override: run a test copy
+# without handing its files to the instance the user has open)
+import os as _os
+_IPC_PORT = int(_os.environ.get("RFAB_VIEWER_IPC_PORT", 52184))
 
 
 def _try_send_to_existing(files):
@@ -1194,7 +1199,8 @@ def main():
     # Configure Python logging module with immediate flush
     import logging
     _handler = logging.FileHandler(str(log_path), mode='a', encoding='utf-8')
-    _handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s', '%H:%M:%S'))
+    # Date + pid on every line: the log is shared by every run and every window
+    _handler.setFormatter(logging.Formatter('%(asctime)s [%(process)d] %(levelname)s %(name)s: %(message)s', '%m-%d %H:%M:%S'))
     _handler.setLevel(logging.DEBUG)
     # Force flush on every emit
     _orig_emit = _handler.emit
@@ -1207,9 +1213,22 @@ def main():
     # Suppress noisy PIL debug
     logging.getLogger('PIL').setLevel(logging.WARNING)
 
+    # The windowed build has no stderr, so an exception raised inside a Qt event
+    # handler or a native fault used to vanish without a trace. Send both here.
+    def _log_unhandled(exc_type, exc, tb):
+        logging.getLogger('rfab_viewer').error("UNHANDLED EXCEPTION", exc_info=(exc_type, exc, tb))
+    sys.excepthook = _log_unhandled
+    try:
+        import faulthandler
+        global _fault_log
+        _fault_log = open(log_path, "a", encoding="utf-8")  # must stay open for the process lifetime
+        faulthandler.enable(file=_fault_log)
+    except Exception:
+        pass
+
     try:
         with open(log_path, "a", encoding="utf-8") as log:
-            log.write(f"\n--- Launch: {sys.argv}\n")
+            log.write(f"\n--- Launch: {_time.strftime('%Y-%m-%d %H:%M:%S')} pid={os.getpid()} {sys.argv}\n")
             log.write(f"TIMING: imports done at {_time.perf_counter() - _t0:.3f}s\n")
 
         # Handle files passed via command-line (e.g. "Open With" from Explorer)
@@ -1272,6 +1291,7 @@ def main():
 
         ret = app.exec()
         ipc.stop()
+        logging.getLogger('rfab_viewer').info(f"EXIT: event loop ended, code={ret}")
         sys.exit(ret)
 
     except Exception as e:

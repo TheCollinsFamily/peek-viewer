@@ -17,6 +17,7 @@ _log = logging.getLogger("rfab_viewer")
 
 _GAP = 2
 _DRAG_THRESHOLD = 12
+_SIBLING_CACHE_SECS = 10
 
 _REMOVE_BTN_STYLE = (
     "QPushButton { background: rgba(0,0,0,0.35); "
@@ -293,6 +294,7 @@ class GridView(ResizeMixin, QWidget):
         self._resize_active = False
         self._layout_mode = 'auto'  # 'auto', '1row', '2row'
         self._focused_cell_idx = None  # last clicked/interacted cell for navigation
+        self._sibling_cache = {}  # directory -> (scan time, sorted media files)
         self._resize_init()
         self.setAcceptDrops(True)
 
@@ -684,6 +686,20 @@ class GridView(ResizeMixin, QWidget):
             "background-color: black; border: 1px solid rgba(88, 166, 255, 0.5);"
         )
 
+    def _siblings_for(self, parent_dir):
+        """Sorted media files of a directory, reused for a few seconds so a run
+        of arrow-key presses scans the folder once instead of once per press."""
+        import time
+        key = str(parent_dir)
+        now = time.monotonic()
+        cached = self._sibling_cache.get(key)
+        if cached and now - cached[0] < _SIBLING_CACHE_SECS:
+            return cached[1]
+        siblings = get_media_files(parent_dir)
+        if siblings:
+            self._sibling_cache[key] = (now, siblings)
+        return siblings
+
     def _navigate_focused(self, delta):
         """Navigate the focused cell to the next/prev file in its directory."""
         if not self._cells:
@@ -698,7 +714,7 @@ class GridView(ResizeMixin, QWidget):
         parent_dir = current_path.parent
 
         # Get sorted media files in the same directory
-        siblings = get_media_files(parent_dir)
+        siblings = self._siblings_for(parent_dir)
         if not siblings:
             return
 

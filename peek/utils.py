@@ -23,10 +23,21 @@ def is_archive(path):
 
 
 def get_media_files(folder_path, sort=True):
-    folder = Path(folder_path)
-    if not folder.is_dir():
+    # scandir takes each entry's type from the directory listing. iterdir() +
+    # is_file() opened every file to stat it: ~10s of frozen UI per call on a
+    # folder of thousands of images on a removable drive.
+    import os
+    files = []
+    try:
+        with os.scandir(folder_path) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_file() and is_media(entry.name):
+                        files.append(Path(entry.path))
+                except OSError:
+                    continue
+    except OSError:
         return []
-    files = [f for f in folder.iterdir() if f.is_file() and is_media(f)]
     if sort:
         files.sort(key=lambda f: natural_sort_key(f.name))
     return files

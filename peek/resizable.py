@@ -771,6 +771,7 @@ class ResizeMixin:
         """Remove this window from the class-level registry."""
         if self in ResizeMixin._all_viewers:
             ResizeMixin._all_viewers.remove(self)
+        _log.info(f"CLOSE: {type(self).__name__} closed, {len(ResizeMixin._all_viewers)} window(s) left")
 
     def _do_resize(self, global_pos):
         delta = global_pos - self._resize_start_pos
