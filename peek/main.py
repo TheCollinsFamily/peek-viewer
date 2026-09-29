@@ -1266,6 +1266,13 @@ def main():
         if icon_path.exists():
             app.setWindowIcon(QIcon(str(icon_path)))
 
+        # Writes the UI thread's stack to the log whenever the window stops responding
+        try:
+            from peek.watchdog import FreezeWatchdog
+            FreezeWatchdog(app).start()
+        except Exception as e:
+            logging.getLogger('rfab_viewer').warning(f"freeze watchdog not started: {e}")
+
         # FAST PATH: When opening image files from CLI, skip building the full
         # LauncherWindow (saves ~1-3s by not loading QtMultimedia and building
         # slideshow/tools tabs). The full launcher is created on-demand if needed.

@@ -26,7 +26,8 @@ def get_media_files(folder_path, sort=True):
     # scandir takes each entry's type from the directory listing. iterdir() +
     # is_file() opened every file to stat it: ~10s of frozen UI per call on a
     # folder of thousands of images on a removable drive.
-    import os
+    import os, time
+    started = time.perf_counter()
     files = []
     try:
         with os.scandir(folder_path) as entries:
@@ -40,6 +41,11 @@ def get_media_files(folder_path, sort=True):
         return []
     if sort:
         files.sort(key=lambda f: natural_sort_key(f.name))
+    elapsed = time.perf_counter() - started
+    if elapsed >= 0.5:
+        import logging
+        logging.getLogger('rfab_viewer').warning(
+            f"SLOW SCAN: {len(files)} media files in '{folder_path}' took {elapsed:.1f}s")
     return files
 
 
