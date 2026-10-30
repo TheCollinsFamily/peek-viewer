@@ -231,6 +231,40 @@ class DropZone(QLabel):
             self.files_dropped(paths)
 
 
+def _app_icon():
+    """(QIcon, where it came from). peek.ico next to the package in a source run, inside the
+    bundle in a frozen build; failing both, the icon Windows shows for the exe itself.
+
+    Before Oct 30 2026 the exe was built without peek.ico in the bundle, so every window
+    had no icon at all and the taskbar showed the generic one. Qt looks for an exe
+    resource named IDI_ICON1 for its window class, which PyInstaller does not provide,
+    so the exe's own embedded icon never reached the windows either."""
+    here = Path(__file__).resolve().parent
+    candidates = [here.parent / "peek.ico", here / "peek.ico"]
+    if hasattr(sys, '_MEIPASS'):
+        candidates.append(Path(sys._MEIPASS) / "peek.ico")
+    if getattr(sys, 'frozen', False):
+        candidates.append(Path(sys.executable).resolve().parent / "peek.ico")
+    for c in candidates:
+        try:
+            if c.exists():
+                icon = QIcon(str(c))
+                if not icon.isNull():
+                    return icon, f"file {c}"
+        except OSError:
+            continue
+    if getattr(sys, 'frozen', False):
+        try:
+            from PySide6.QtCore import QFileInfo
+            from PySide6.QtWidgets import QFileIconProvider
+            icon = QFileIconProvider().icon(QFileInfo(sys.executable))
+            if not icon.isNull():
+                return icon, f"exe resource {sys.executable}"
+        except Exception:
+            pass
+    return QIcon(), "none"
+
+
 class LauncherWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -239,11 +273,9 @@ class LauncherWindow(QMainWindow):
         self.resize(520, 580)
 
         # Window icon
-        icon_path = Path(__file__).resolve().parent.parent / "peek.ico"
-        if not icon_path.exists() and hasattr(sys, '_MEIPASS'):
-            icon_path = Path(sys._MEIPASS) / "peek.ico"
-        if icon_path.exists():
-            self.setWindowIcon(QIcon(str(icon_path)))
+        icon, _src = _app_icon()
+        if not icon.isNull():
+            self.setWindowIcon(icon)
 
         self._viewers = []
         self._boss_key = BossKey(self)
@@ -1259,12 +1291,13 @@ def main():
         app.setApplicationName("RFab Viewer")
         app.setStyleSheet(DARK_STYLE)
 
-        # Set app-wide icon (applies to all windows)
-        icon_path = Path(__file__).resolve().parent.parent / "peek.ico"
-        if not icon_path.exists() and hasattr(sys, '_MEIPASS'):
-            icon_path = Path(sys._MEIPASS) / "peek.ico"
-        if icon_path.exists():
-            app.setWindowIcon(QIcon(str(icon_path)))
+        # Set app-wide icon (applies to all windows, and is what the taskbar shows)
+        icon, icon_src = _app_icon()
+        if icon.isNull():
+            logging.getLogger('rfab_viewer').warning("ICON: no icon found; windows will show the generic one")
+        else:
+            app.setWindowIcon(icon)
+            logging.getLogger('rfab_viewer').info(f"ICON: {icon_src}")
 
         # Writes the UI thread's stack to the log whenever the window stops responding
         try:

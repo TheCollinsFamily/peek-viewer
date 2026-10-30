@@ -2,11 +2,75 @@ import shiboken6
 import logging
 _log = logging.getLogger('rfab_viewer')
 
-from PySide6.QtCore import Qt, QPoint, QRect, QEvent, Signal, QTimer
-from PySide6.QtGui import QCursor
+from PySide6.QtCore import Qt, QPoint, QRect, QEvent, Signal, QTimer, QSize
+from PySide6.QtGui import QCursor, QPixmap, QPainter, QColor, QIcon
 from PySide6.QtWidgets import QPushButton, QWidget, QFrame, QApplication, QLabel
 
 EDGE_SIZE = 20
+
+# Button bar geometry. One formula for the bar's width, used by the bar itself and by
+# the grid (which hides cell X buttons that would sit under the bar).
+_BTN = 28
+_BTN_GAP = 4
+_GROUP_GAP = 14   # extra space between the layout buttons and the window controls
+_BAR_PAD = 20
+_ICON_PX = 18
+
+
+def bar_width(buttons):
+    n = len(buttons)
+    if n == 0:
+        return 0
+    groups = sum(1 for i in range(1, n)
+                 if bool(buttons[i - 1].property('layout_group')) != bool(buttons[i].property('layout_group')))
+    return _BTN * n + _BTN_GAP * (n - 1) + _GROUP_GAP * groups + _BAR_PAD
+
+
+def _paint_icon(draw, size=_ICON_PX):
+    """A crisp white icon drawn with a callback draw(painter, size), so the bar's buttons do not
+    depend on what a font's glyphs look like. The one-row layout button used to be a heavy
+    horizontal line next to a minimize button that was an em dash: two identical lines on
+    one bar, and the wrong one minimized the window (Oct 30 2026)."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(255, 255, 255, 215))
+    draw(p, size)
+    p.end()
+    return QIcon(pm)
+
+
+def make_grid_icon(rows, cols):
+    """rows x cols little boxes: 1x3 = everything in one row, 2x3 = two rows, 2x2 = auto grid."""
+    def draw(p, size):
+        gap = 2
+        inner = size - 2
+        bw = (inner - gap * (cols - 1)) // cols
+        bh = (inner - gap * (rows - 1)) // rows
+        x0 = (size - (bw * cols + gap * (cols - 1))) // 2
+        y0 = (size - (bh * rows + gap * (rows - 1))) // 2
+        for r in range(rows):
+            for c in range(cols):
+                p.drawRect(x0 + c * (bw + gap), y0 + r * (bh + gap), bw, bh)
+    return _paint_icon(draw)
+
+
+def make_minimize_icon():
+    """The classic minimize glyph: a short bar at the bottom."""
+    def draw(p, size):
+        p.drawRect(4, size - 5, size - 8, 2)
+    return _paint_icon(draw)
+
+
+def _log_click(name):
+    _log.info(f"BTN: {name}")
+
+
+def log_clicks(button, name):
+    """Write 'BTN: <name>' to the log before the button's own handler runs, so a report like
+    'the window minimized when I clicked X' can be answered from the log."""
+    button.clicked.connect(lambda _checked=False, n=name: _log_click(n))
 
 _EDGE_NONE = 0
 _EDGE_LEFT = 1
@@ -112,8 +176,7 @@ class _ButtonBar(QWidget):
             return
         if not pw._wc_buttons:
             return
-        btn_count = len(pw._wc_buttons)
-        bar_w = 28 * btn_count + 4 * (btn_count - 1) + 20
+        bar_w = bar_width(pw._wc_buttons)
         bar_h = 48
         self.setFixedSize(bar_w, bar_h)
 
@@ -124,10 +187,14 @@ class _ButtonBar(QWidget):
         self.move(geo.x() + geo.width() - bar_w, geo.y())
 
         x = bar_w - 10
+        prev = None
         for btn in reversed(pw._wc_buttons):
+            if prev is not None and bool(prev.property('layout_group')) != bool(btn.property('layout_group')):
+                x -= _GROUP_GAP
             x -= btn.width()
             btn.move(x, 10)
-            x -= 4
+            x -= _BTN_GAP
+            prev = btn
 
     def eventFilter(self, obj, event):
         if not shiboken6.isValid(obj):
@@ -409,6 +476,8 @@ class ResizeMixin:
         home_btn.setFixedSize(28, 28)
         home_btn.setStyleSheet(_WC_BTN_STYLE)
         home_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        home_btn.setToolTip("Home")
+        log_clicks(home_btn, "home")
         home_btn.clicked.connect(self._on_home_clicked)
         self._wc_buttons.append(home_btn)
 
@@ -416,14 +485,22 @@ class ResizeMixin:
         mute_btn.setFixedSize(28, 28)
         mute_btn.setStyleSheet(_WC_MUTE_STYLE)
         mute_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        mute_btn.setToolTip("Mute / unmute")
+        log_clicks(mute_btn, "mute")
         mute_btn.clicked.connect(self._on_mute_clicked)
         self._mute_btn = mute_btn
         self._wc_buttons.append(mute_btn)
 
-        minimize_btn = QPushButton("—", self._btn_bar)
+        # Drawn icon, not a text glyph: the em dash this used to be was indistinguishable
+        # from the grid's one-row button (a heavy horizontal line) four buttons to its left.
+        minimize_btn = QPushButton("", self._btn_bar)
+        minimize_btn.setIcon(make_minimize_icon())
+        minimize_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
         minimize_btn.setFixedSize(28, 28)
         minimize_btn.setStyleSheet(_WC_BTN_STYLE)
         minimize_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        minimize_btn.setToolTip("Minimize")
+        log_clicks(minimize_btn, "minimize")
         minimize_btn.clicked.connect(self._on_minimize_clicked)
         self._wc_buttons.append(minimize_btn)
 
@@ -431,6 +508,8 @@ class ResizeMixin:
         fs_btn.setFixedSize(28, 28)
         fs_btn.setStyleSheet(_WC_BTN_STYLE)
         fs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        fs_btn.setToolTip("Full screen (F, or double-click)")
+        log_clicks(fs_btn, "fullscreen")
         fs_btn.clicked.connect(self._toggle_fullscreen)
         self._wc_buttons.append(fs_btn)
 
@@ -438,6 +517,8 @@ class ResizeMixin:
         close_btn.setFixedSize(28, 28)
         close_btn.setStyleSheet(_WC_CLOSE_STYLE)
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setToolTip("Close (Esc)")
+        log_clicks(close_btn, "close")
         close_btn.clicked.connect(self.close)
         self._wc_buttons.append(close_btn)
 
@@ -460,6 +541,7 @@ class ResizeMixin:
                 return
 
     def _on_minimize_clicked(self):
+        _log.info("MINIMIZE: window minimized by its bar button")
         if self._btn_bar:
             self._btn_bar.hide()
         self.showMinimized()

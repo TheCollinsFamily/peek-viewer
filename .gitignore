@@ -7,3 +7,4 @@ dist/
 *.egg-info/
 .env
 patch_grid.py
+dist-new/

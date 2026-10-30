@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
 from PIL import Image
 
 from peek.utils import is_image, is_video, fit_size, get_media_files
-from peek.resizable import ResizeMixin
+from peek.resizable import ResizeMixin, bar_width
 import logging
 _log = logging.getLogger("rfab_viewer")
 
@@ -407,8 +407,7 @@ class GridView(ResizeMixin, QWidget):
         # Hide remove buttons that conflict with the top button bar (top-right area)
         _BAR_H = 48
         if len(self._cells) > 1:
-            btn_count = len(self._wc_buttons) if hasattr(self, '_wc_buttons') else 5
-            bar_w = 28 * btn_count + 4 * (btn_count - 1) + 20
+            bar_w = bar_width(self._wc_buttons) if hasattr(self, '_wc_buttons') else 180
             bar_left = w - bar_w
             for cell in self._cells:
                 if hasattr(cell, '_remove_btn'):
@@ -507,8 +506,7 @@ class GridView(ResizeMixin, QWidget):
         if not self.isVisible() or len(self._cells) <= 1:
             return
         _log.debug(f"FLOAT BTNS: showing for {len(self._cells)} cells")
-        btn_count = len(self._wc_buttons) if hasattr(self, '_wc_buttons') else 5
-        bar_w = 28 * btn_count + 4 * (btn_count - 1) + 20
+        bar_w = bar_width(self._wc_buttons) if hasattr(self, '_wc_buttons') else 180
         bar_left = self.width() - bar_w
         for c in self._cells:
             if getattr(c, "_remove_btn_floating", False):
@@ -615,43 +613,45 @@ class GridView(ResizeMixin, QWidget):
 
     def _toggle_fullscreen(self):
         if self._is_fullscreen:
+            _log.info("FULLSCREEN: off")
             self.showNormal()
             self._is_fullscreen = False
         else:
+            _log.info("FULLSCREEN: on")
             self.showFullScreen()
             self._is_fullscreen = True
 
     def _add_layout_buttons(self):
-        """Add layout mode buttons (auto grid / 1 row / 2 rows) to the button bar."""
-        from peek.resizable import _WC_BTN_STYLE
+        """Add layout mode buttons (auto grid / 1 row / 2 rows) to the button bar.
+
+        Drawn icons (little boxes), not text glyphs: the one-row button used to be a heavy
+        horizontal line, the same shape as the minimize button's em dash further along the
+        bar, and the wrong one minimized the window. The group also sits a gap apart from
+        the window controls (see bar_width / reposition in resizable.py)."""
+        from peek.resizable import _WC_BTN_STYLE, make_grid_icon, log_clicks, _ICON_PX
+        from PySide6.QtCore import QSize
         if not self._btn_bar:
             return
 
-        auto_btn = QPushButton("\u2261", self._btn_bar)
-        auto_btn.setFixedSize(28, 28)
-        auto_btn.setStyleSheet(_WC_BTN_STYLE)
-        auto_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        auto_btn.setToolTip("Auto grid layout")
-        auto_btn.clicked.connect(self._set_layout_auto)
-        auto_btn.show()
+        def layout_button(rows, cols, tip, name, handler):
+            btn = QPushButton("", self._btn_bar)
+            btn.setIcon(make_grid_icon(rows, cols))
+            btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
+            btn.setFixedSize(28, 28)
+            btn.setStyleSheet(_WC_BTN_STYLE)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip(tip)
+            btn.setProperty('layout_group', True)
+            log_clicks(btn, name)
+            btn.clicked.connect(handler)
+            btn.show()
+            return btn
+
+        auto_btn = layout_button(2, 2, "Auto grid", "layout auto", self._set_layout_auto)
+        row1_btn = layout_button(1, 3, "Everything in one row", "layout 1row", self._set_layout_1row)
+        row2_btn = layout_button(2, 3, "Two rows", "layout 2row", self._set_layout_2row)
         self._wc_buttons.insert(0, auto_btn)
-
-        row1_btn = QPushButton("\u2501", self._btn_bar)
-        row1_btn.setFixedSize(28, 28)
-        row1_btn.setStyleSheet(_WC_BTN_STYLE)
-        row1_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        row1_btn.setToolTip("Single row layout")
-        row1_btn.clicked.connect(self._set_layout_1row)
-        row1_btn.show()
         self._wc_buttons.insert(1, row1_btn)
-
-        row2_btn = QPushButton("\u2550", self._btn_bar)
-        row2_btn.setFixedSize(28, 28)
-        row2_btn.setStyleSheet(_WC_BTN_STYLE)
-        row2_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        row2_btn.setToolTip("Two row layout")
-        row2_btn.clicked.connect(self._set_layout_2row)
-        row2_btn.show()
         self._wc_buttons.insert(2, row2_btn)
 
         self._btn_bar.reposition()
@@ -659,17 +659,20 @@ class GridView(ResizeMixin, QWidget):
     def _set_layout_auto(self):
         self._layout_mode = 'auto'
         self._max_columns = 4
+        _log.info(f"LAYOUT: auto, {len(self._cells)} cells")
         self._do_layout()
 
     def _set_layout_1row(self):
         self._layout_mode = '1row'
         self._max_columns = len(self._cells)
+        _log.info(f"LAYOUT: one row, {len(self._cells)} cells")
         self._do_layout()
 
     def _set_layout_2row(self):
         self._layout_mode = '2row'
         import math
         self._max_columns = max(1, math.ceil(len(self._cells) / 2))
+        _log.info(f"LAYOUT: two rows, {len(self._cells)} cells")
         self._do_layout()
 
     def _set_focused_cell(self, index):
