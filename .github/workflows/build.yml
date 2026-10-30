@@ -14,6 +14,8 @@ name: Build macOS + Linux & Upload to S3
 on:
   push:
     branches: [master]
+    paths-ignore:
+      - '**.md'   # a note or README change is not a release (linux/README.txt ships, so .txt is not here)
   workflow_dispatch:  # manual trigger from GitHub UI
 
 jobs:
