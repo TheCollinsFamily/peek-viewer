@@ -233,12 +233,19 @@ class DropZone(QLabel):
 
 def _app_icon():
     """(QIcon, where it came from). peek.ico next to the package in a source run, inside the
-    bundle in a frozen build; failing both, the icon Windows shows for the exe itself.
+    bundle in a frozen build; failing both, on Windows, the icon Explorer shows for the exe
+    itself. In the macOS .app it is a null icon on purpose: see below.
 
     Before Oct 30 2026 the exe was built without peek.ico in the bundle, so every window
     had no icon at all and the taskbar showed the generic one. Qt looks for an exe
     resource named IDI_ICON1 for its window class, which PyInstaller does not provide,
     so the exe's own embedded icon never reached the windows either."""
+    if sys.platform == "darwin" and getattr(sys, 'frozen', False):
+        # The .app bundle names peek.icns in its Info.plist and macOS shows that in the Dock.
+        # QGuiApplication.setWindowIcon REPLACES the Dock icon on macOS (Qt's Cocoa
+        # integration hands it to NSApp.applicationIconImage), so anything set from here,
+        # the 32 px peek.ico or the generic executable icon, would be a downgrade.
+        return QIcon(), "app bundle (macOS)"
     here = Path(__file__).resolve().parent
     candidates = [here.parent / "peek.ico", here / "peek.ico"]
     if hasattr(sys, '_MEIPASS'):
@@ -253,7 +260,7 @@ def _app_icon():
                     return icon, f"file {c}"
         except OSError:
             continue
-    if getattr(sys, 'frozen', False):
+    if sys.platform == "win32" and getattr(sys, 'frozen', False):
         try:
             from PySide6.QtCore import QFileInfo
             from PySide6.QtWidgets import QFileIconProvider
@@ -1293,11 +1300,13 @@ def main():
 
         # Set app-wide icon (applies to all windows, and is what the taskbar shows)
         icon, icon_src = _app_icon()
-        if icon.isNull():
-            logging.getLogger('rfab_viewer').warning("ICON: no icon found; windows will show the generic one")
-        else:
+        if not icon.isNull():
             app.setWindowIcon(icon)
             logging.getLogger('rfab_viewer').info(f"ICON: {icon_src}")
+        elif icon_src.startswith("app bundle"):
+            logging.getLogger('rfab_viewer').info(f"ICON: {icon_src}, left to the bundle")
+        else:
+            logging.getLogger('rfab_viewer').warning("ICON: no icon found; windows will show the generic one")
 
         # Writes the UI thread's stack to the log whenever the window stops responding
         try:

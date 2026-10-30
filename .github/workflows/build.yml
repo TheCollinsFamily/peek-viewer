@@ -1,4 +1,15 @@
-name: Build macOS & Upload to S3
+name: Build macOS + Linux & Upload to S3
+
+# What rfab.ai/downloads hands out for the viewer, and where each file is built:
+#   RFab Viewer.dmg           macOS, signed + notarized      this file, job build-mac
+#   RFab Viewer Linux.tar.gz  Linux x86-64                   this file, job build-linux
+#   RFab Viewer.exe           Windows, Azure Trusted Signing TheCollinsFamily/rf-bridge,
+#                             .github/workflows/build-viewer-win.yml (the signing secrets
+#                             live in that repo; name the commit to ship in its
+#                             .github/viewer-release.txt and push)
+# All three go to s3://rfab-media/downloads/ under the names the site links, and
+# downloads/versions/<file>.json says which commit each was built from.
+# build.bat in this repo builds only the local dist\RFab Viewer.exe a PC opens images with.
 
 on:
   push:
@@ -294,4 +305,89 @@ jobs:
           which aws || pip install awscli
           ls -lh "dist/RFab Viewer.dmg"
           aws s3 cp "dist/RFab Viewer.dmg" "s3://rfab-media/downloads/RFab Viewer.dmg" --content-type application/octet-stream
+          # Which commit is live: read by anyone checking what the site hands out.
+          echo "{\"version\":\"$(date -u +%Y.%m.%d)\",\"commit\":\"$GITHUB_SHA\",\"builtAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" \
+            | aws s3 cp - "s3://rfab-media/downloads/versions/RFab Viewer.dmg.json" --content-type application/json --cache-control no-cache
           echo "Uploaded to: https://rfab-media.s3.us-east-1.amazonaws.com/downloads/RFab Viewer.dmg"
+
+  build-linux:
+    # ubuntu-22.04 on purpose: a PyInstaller binary needs the glibc of the machine that built
+    # it or newer, so building on the oldest runner keeps 22.04 desktops in.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 \
+            libxcb-shape0 libxcb-xinerama0 libegl1 libgl1 libopengl0 libfontconfig1 libdbus-1-3
+          # The same PySide6 / PyInstaller the Windows exe is built with (tested Oct 30 2026).
+          pip install "PySide6==6.12.0" "pyinstaller==6.22.3" Pillow
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --noconfirm --clean --onefile \
+            --name "RFab Viewer" \
+            --add-data "peek.ico:." \
+            --add-data "peek:peek" \
+            main.py
+          ls -lh "dist/RFab Viewer"
+
+      - name: Smoke test (offscreen)
+        run: |
+          python3 -c "from PIL import Image; Image.new('RGB', (640, 480), (40, 90, 160)).save('/tmp/smoke.png')"
+          LOG="$(python3 -c 'import tempfile; print(tempfile.gettempdir())')/rfab_viewer.log"
+          rm -f "$LOG"
+          QT_QPA_PLATFORM=offscreen RFAB_VIEWER_IPC_PORT=47391 timeout 20 "./dist/RFab Viewer" /tmp/smoke.png || true
+          echo "=== $LOG ==="
+          cat "$LOG"
+          grep -q "ICON: file" "$LOG" || { echo "FAIL: the window icon was not loaded from the bundle"; exit 1; }
+          if grep -q -E "UNHANDLED|Traceback" "$LOG"; then echo "FAIL: the viewer raised"; exit 1; fi
+          echo "smoke OK"
+
+      - name: Package tar.gz (binary, install.sh, menu entry, icon)
+        run: |
+          set -e
+          PKG="dist/rfab-viewer-linux"
+          mkdir -p "$PKG"
+          cp "dist/RFab Viewer" "$PKG/RFab Viewer"
+          chmod +x "$PKG/RFab Viewer"
+          python3 - <<'PY'
+          from PIL import Image
+          im = Image.open('peek.ico').convert('RGBA')
+          if im.size[0] < 256:
+              im = im.resize((256, 256), Image.LANCZOS)
+          im.save('dist/rfab-viewer-linux/rfab-viewer.png')
+          PY
+          cp linux/install.sh linux/rfab-viewer.desktop linux/README.txt "$PKG/"
+          chmod +x "$PKG/install.sh"
+          tar -czf "dist/RFab Viewer Linux.tar.gz" -C dist rfab-viewer-linux
+          ls -lh "dist/RFab Viewer Linux.tar.gz"
+          tar -tzf "dist/RFab Viewer Linux.tar.gz"
+
+      - name: Upload tar.gz as artifact (backup)
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: RFab-Viewer-Linux
+          path: dist/RFab Viewer Linux.tar.gz
+
+      - name: Upload tar.gz to S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          which aws || pip install awscli
+          aws s3 cp "dist/RFab Viewer Linux.tar.gz" "s3://rfab-media/downloads/RFab Viewer Linux.tar.gz" \
+            --content-type application/gzip \
+            --content-disposition 'attachment; filename="RFab Viewer Linux.tar.gz"'
+          echo "{\"version\":\"$(date -u +%Y.%m.%d)\",\"commit\":\"$GITHUB_SHA\",\"builtAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" \
+            | aws s3 cp - "s3://rfab-media/downloads/versions/RFab Viewer Linux.tar.gz.json" --content-type application/json --cache-control no-cache
+          echo "Uploaded to: https://rfab-media.s3.us-east-1.amazonaws.com/downloads/RFab Viewer Linux.tar.gz"

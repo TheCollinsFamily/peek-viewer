@@ -5,8 +5,10 @@ echo === Building RFab Viewer ===
 echo.
 
 REM The exe that Windows opens for images and videos is dist\RFab Viewer.exe
-REM (FIXES_2026-09-29.md, "Which program this is"). This script is the whole build:
+REM (FIXES_2026-09-29.md, "Which program this is"). This script is the whole LOCAL build:
 REM there is no committed .spec (*.spec is git-ignored), PyInstaller writes one per run.
+REM It is not the release: the exe rfab.ai hands out is built, signed and uploaded by
+REM rf-bridge's .github/workflows/build-viewer-win.yml (README.md, "Releases").
 REM   --icon            the exe's own icon (Explorer, taskbar fallback)
 REM   --add-data peek.ico;.   the window icon: peek/main.py _app_icon() loads it from the
 REM                     bundle. Without it every window had no icon and the taskbar showed
