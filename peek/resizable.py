@@ -503,6 +503,7 @@ class ResizeMixin:
         log_clicks(minimize_btn, "minimize")
         minimize_btn.clicked.connect(self._on_minimize_clicked)
         self._wc_buttons.append(minimize_btn)
+        self._minimize_btn = minimize_btn
 
         fs_btn = QPushButton("⛶", self._btn_bar)
         fs_btn.setFixedSize(28, 28)

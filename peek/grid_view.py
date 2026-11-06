@@ -650,6 +650,18 @@ class GridView(ResizeMixin, QWidget):
         auto_btn = layout_button(2, 2, "Auto grid", "layout auto", self._set_layout_auto)
         row1_btn = layout_button(1, 3, "Everything in one row", "layout 1row", self._set_layout_1row)
         row2_btn = layout_button(2, 3, "Two rows", "layout 2row", self._set_layout_2row)
+        # No minimize button on the grid's bar (Nov 6 2026). Even after the Oct 30 redraw,
+        # Collins kept hitting it when he meant "everything in one row": the log of Nov 2 and
+        # Nov 4 shows a grid of 4-5 pages built, then BTN: minimize (twice each time), and not
+        # one "BTN: layout 1row" since the fix. A short bar still reads as "a line". The grid
+        # is a viewing surface he never minimizes on purpose; the taskbar button and Win+Down
+        # still minimize it. Single-image viewers keep their minimize button.
+        mb = getattr(self, '_minimize_btn', None)
+        if mb is not None and mb in self._wc_buttons:
+            self._wc_buttons.remove(mb)
+            mb.hide()
+            mb.deleteLater()
+            self._minimize_btn = None
         self._wc_buttons.insert(0, auto_btn)
         self._wc_buttons.insert(1, row1_btn)
         self._wc_buttons.insert(2, row2_btn)
